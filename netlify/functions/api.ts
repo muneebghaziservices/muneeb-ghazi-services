@@ -934,6 +934,31 @@ async function adjustBalance(p: Params, token: string | null) {
 
 // -------------------------------------------------------------- conversations
 
+// A customer's own conversation: the most recent OPEN one, or a new one
+// created when they have none open. Shared by getConversation and
+// sendMessage so a first message can never be lost for want of a
+// conversationId, and a customer whose only thread was closed can start
+// a fresh one instead of being stuck on a closed thread.
+async function getOrCreateOwnConversation(me: Profile): Promise<any> {
+  const { data, error } = await db()
+    .from('conversations')
+    .select('*')
+    .eq('profile_id', me.id)
+    .eq('status', 'Open')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error('Could not open conversation');
+  if (data) return data;
+  const { data: created, error: cerr } = await db()
+    .from('conversations')
+    .insert({ profile_id: me.id, status: 'Open' })
+    .select('*')
+    .single();
+  if (cerr || !created) throw new Error('Could not open conversation');
+  return created;
+}
+
 async function getConversation(p: Params, token: string | null) {
   const me = await requireAuth(token);
   let conversation: any = null;
@@ -951,25 +976,7 @@ async function getConversation(p: Params, token: string | null) {
     conversation = data;
   } else {
     if (!isStaffOrAdmin(me)) {
-      // Customer: their own conversation, created if none exists.
-      const { data } = await db()
-        .from('conversations')
-        .select('*')
-        .eq('profile_id', me.id)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (data) {
-        conversation = data;
-      } else {
-        const { data: created, error: cerr } = await db()
-          .from('conversations')
-          .insert({ profile_id: me.id, status: 'Open' })
-          .select('*')
-          .single();
-        if (cerr || !created) throw new Error('Could not open conversation');
-        conversation = created;
-      }
+      conversation = await getOrCreateOwnConversation(me);
     } else {
       throw new Error('conversationId is required for staff');
     }
@@ -1001,15 +1008,27 @@ async function getConversation(p: Params, token: string | null) {
 
 async function sendMessage(p: Params, token: string | null) {
   const me = await requireAuth(token);
-  requireFields(p, ['conversationId', 'body']);
+  requireFields(p, ['body']);
   const body = String(p.body).trim();
   if (body.length > 2000) throw new Error('Message is too long');
-  const { data: conv, error } = await db()
-    .from('conversations')
-    .select('*')
-    .eq('id', p.conversationId)
-    .maybeSingle();
-  if (error || !conv) throw new Error('Conversation not found');
+  // Resolve the thread. A customer sending without a conversationId gets
+  // their own conversation (created if needed) — a first message must
+  // never fail for want of an id. Staff must name the thread from the
+  // Messages inbox.
+  let conv: any = null;
+  if (p.conversationId) {
+    const { data, error } = await db()
+      .from('conversations')
+      .select('*')
+      .eq('id', p.conversationId)
+      .maybeSingle();
+    if (error || !data) throw new Error('Conversation not found');
+    conv = data;
+  } else if (!isStaffOrAdmin(me)) {
+    conv = await getOrCreateOwnConversation(me);
+  } else {
+    throw new Error('conversationId is required for staff');
+  }
   const isOwn = conv.profile_id === me.id;
   if (!isOwn) requirePerm(me, 'messages');
   if (conv.status === 'Closed' && !isStaffOrAdmin(me)) {

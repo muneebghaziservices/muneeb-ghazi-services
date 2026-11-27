@@ -391,7 +391,7 @@ export default function App() {
         <button type="button" className="chat-bubble" aria-label="Support chat" onClick={() => setChatOpen((o) => !o)}>💬</button>
       </div>
       {chatOpen && (
-        <ChatPanel profile={profile} toast={toast} onClose={() => setChatOpen(false)} onNeedAuth={() => setAuthOpen(true)} />
+        <ChatPanel profile={profile} toast={toast} onClose={() => setChatOpen(false)} onNeedAuth={() => setAuthOpen(true)} onOpenAdmin={() => { setChatOpen(false); setView('admin'); }} />
       )}
 
       {authOpen && (
@@ -952,22 +952,39 @@ function FloatingVideo({ onClose }: { onClose: () => void }) {
   );
 }
 
-function ChatPanel({ profile, toast, onClose, onNeedAuth }: {
+function ChatPanel({ profile, toast, onClose, onNeedAuth, onOpenAdmin }: {
   profile: Profile | null; toast: (m: string, e?: boolean) => void;
-  onClose: () => void; onNeedAuth: () => void;
+  onClose: () => void; onNeedAuth: () => void; onOpenAdmin?: () => void;
 }) {
   const [conv, setConv] = useState<Conversation | null>(null);
   const [body, setBody] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
+  // One in-flight conversation load, shared by the mount effect and send()
+  // so a quick first send waits for the thread instead of firing without
+  // an id (which used to fail with "Missing field: conversationId").
+  const loadRef = useRef<Promise<Conversation | null> | null>(null);
 
-  const load = useCallback(async () => {
-    if (!profile) return;
-    try {
-      const d = await api<{ conversation?: Record<string, unknown> }>('getConversation', {});
-      if (d.conversation) setConv(normConversation(d.conversation));
-    } catch (e) { setErr(e instanceof Error ? e.message : 'Chat could not be loaded.'); }
+  const load = useCallback((): Promise<Conversation | null> => {
+    if (!profile) return Promise.resolve(null);
+    if (!loadRef.current) {
+      setLoading(true);
+      loadRef.current = (async (): Promise<Conversation | null> => {
+        try {
+          const d = await api<{ conversation?: Record<string, unknown> }>('getConversation', {});
+          if (d.conversation) {
+            const c = normConversation(d.conversation);
+            setConv(c);
+            return c;
+          }
+          return null;
+        } catch (e) { setErr(e instanceof Error ? e.message : 'Chat could not be loaded.'); return null; }
+        finally { setLoading(false); loadRef.current = null; }
+      })();
+    }
+    return loadRef.current;
   }, [profile]);
 
   useEffect(() => { void load(); }, [load]);
@@ -976,15 +993,21 @@ function ChatPanel({ profile, toast, onClose, onNeedAuth }: {
   async function send(e: React.FormEvent) {
     e.preventDefault();
     if (!profile) { onNeedAuth(); toast('Please log in to chat with support.'); return; }
-    if (!body.trim()) return;
+    if (!body.trim() || busy) return;
     setBusy(true);
     try {
+      // Never send without a conversation: wait for the thread to load
+      // (or be created) first, so a quick first message cannot fail with
+      // "Missing field: conversationId".
+      const c = conv?.id ? conv : await load();
+      if (!c?.id) throw new Error('Chat could not be loaded. Please try again.');
       const d = await api<{ conversation?: Record<string, unknown> }>('sendMessage', {
-        ...(conv?.id ? { conversationId: conv.id } : {}), body: body.trim(),
+        conversationId: c.id, body: body.trim(),
       });
       if (d.conversation) setConv(normConversation(d.conversation));
-      else setConv((c) => c ? { ...c, messages: [...c.messages, { id: `tmp-${Date.now()}`, sender: 'customer', body: body.trim(), createdAt: new Date().toISOString() }] } : c);
+      else setConv((prev) => prev ? { ...prev, messages: [...prev.messages, { id: `tmp-${Date.now()}`, sender: 'customer', body: body.trim(), createdAt: new Date().toISOString() }] } : prev);
       setBody('');
+      setErr('');
     } catch (e2) { setErr(e2 instanceof Error ? e2.message : 'Message failed to send.'); } finally { setBusy(false); }
   }
 
@@ -998,6 +1021,11 @@ function ChatPanel({ profile, toast, onClose, onNeedAuth }: {
         <div style={{ padding: 16 }}>
           <p style={{ color: 'var(--muted)', fontSize: 14 }}>Log in to chat with support about your orders.</p>
           <button type="button" className="btn btn-primary" onClick={onNeedAuth}>Log in / Sign up</button>
+        </div>
+      ) : profile.role === 'admin' || profile.role === 'staff' ? (
+        <div style={{ padding: 16 }}>
+          <p style={{ color: 'var(--muted)', fontSize: 14 }}>You're signed in as staff. Reply to customers from the Admin panel → Messages inbox.</p>
+          <button type="button" className="btn btn-primary" onClick={() => { onClose(); onOpenAdmin?.(); }}>Open Messages inbox</button>
         </div>
       ) : (
         <>
@@ -1013,7 +1041,7 @@ function ChatPanel({ profile, toast, onClose, onNeedAuth }: {
           </div>
           <form className="chat-input" onSubmit={send}>
             <input className="input" value={body} onChange={(e) => setBody(e.target.value)} placeholder="Type a message…" />
-            <button type="submit" className="btn btn-primary" disabled={busy}>Send</button>
+            <button type="submit" className="btn btn-primary" disabled={busy || loading}>Send</button>
           </form>
         </>
       )}
