@@ -758,13 +758,18 @@ async function cancelOrder(p: Params, token: string | null) {
 async function listOrders(_p: Params, token: string | null) {
   const me = await requireAuth(token);
   requirePerm(me, 'orders');
+  // 2026-11-28: admin rows must show WHO placed the order. The frontend
+  // already renders customer_name (normOrder + OrdersTab); the old
+  // select('*') never supplied it, so rows showed no username. Same
+  // embedded-join pattern as listConversations — one query, no N+1.
   const { data, error } = await db()
     .from('orders')
-    .select('*')
+    .select('*, profiles(display_name)')
     .order('created_at', { ascending: false })
     .limit(500);
   if (error) throw new Error(error.message);
-  return { orders: data ?? [] };
+  const rows = (data ?? []) as any[];
+  return { orders: rows.map((o: any) => ({ ...o, customer_name: o.profiles?.display_name ?? '' })) };
 }
 
 async function setOrderStatus(p: Params, token: string | null) {
@@ -775,10 +780,14 @@ async function setOrderStatus(p: Params, token: string | null) {
   if (!p.orderId || !valid.includes(p.status)) throw new Error('Invalid order or status');
   const { data: order, error: ferr } = await db()
     .from('orders')
-    .select('*')
+    .select('*, profiles(display_name)')
     .eq('id', p.orderId)
     .maybeSingle();
   if (ferr || !order) throw new Error('Order not found');
+  // 2026-11-28: keep the customer's name on every returned row, so a
+  // status change never wipes the username from the admin list.
+  const customerName = (order as any).profiles?.display_name ?? '';
+  const withName = (o: any) => ({ ...o, customer_name: customerName });
   // An order that already refunded (Cancelled / Partial) must never refund
   // twice — its status is final.
   if (order.status === 'Cancelled' || order.status === 'Partial') {
@@ -828,7 +837,7 @@ async function setOrderStatus(p: Params, token: string | null) {
     }
     await applyOrderRefund(order, refundPaisa);
     const { data: updated } = await db().from('orders').select('*').eq('id', order.id).maybeSingle();
-    return { order: updated ?? { ...order, status: p.status, reason, refunded_paisa: refundPaisa }, refundedPaisa: refundPaisa, reasonSaved: saved };
+    return { order: withName(updated ?? { ...order, status: p.status, reason, refunded_paisa: refundPaisa }), refundedPaisa: refundPaisa, reasonSaved: saved };
   }
 
   const { data, error } = await db()
@@ -838,7 +847,7 @@ async function setOrderStatus(p: Params, token: string | null) {
     .select('*')
     .single();
   if (error || !data) throw new Error(error?.message || 'Order not found');
-  return { order: data };
+  return { order: withName(data) };
 }
 
 // -------------------------------------------------------------------- funds
