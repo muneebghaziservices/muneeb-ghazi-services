@@ -802,11 +802,23 @@ async function setOrderStatus(p: Params, token: string | null) {
         throw new Error('Refund amount must be more than Rs 0 and no more than the order total');
       }
     }
-    const saved = await saveOrderRefundFields(order.id, {
-      status: p.status,
-      reason,
-      refunded_paisa: refundPaisa,
-    });
+    const saved = await (async () => {
+      try {
+        return await saveOrderRefundFields(order.id, {
+          status: p.status,
+          reason,
+          refunded_paisa: refundPaisa,
+        });
+      } catch (e) {
+        // 'Partial' is rejected by the DB check constraint until migration
+        // 0004 widens it — say so plainly instead of the raw Postgres
+        // error, and make clear NO refund was applied.
+        if (/orders_status_check/i.test(e instanceof Error ? e.message : '')) {
+          throw new Error('Partial status needs a database update (migration 0004) that has not run yet — nothing was refunded. Please run migration 0004 first.');
+        }
+        throw e;
+      }
+    })();
     if (!saved) {
       const { error: uerr } = await db()
         .from('orders')
