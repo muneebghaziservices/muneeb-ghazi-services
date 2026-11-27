@@ -1,0 +1,23 @@
+# Netlify — Muneeb Ghazi Services
+# Frontend lives in web/ (separate agent owns it); functions in netlify/functions/.
+
+[build]
+  base = "."
+  command = "cd web && npm install && npm run build"
+  publish = "web/dist"
+  functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# SPA fallback: everything that is not a file or a function goes to index.html.
+# The /.netlify/* exclusion keeps function + internal routes working.
+[[redirects]]
+  from = "/.netlify/*"
+  to = "/.netlify/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

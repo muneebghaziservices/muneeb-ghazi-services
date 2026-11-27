@@ -1,0 +1,11 @@
+# Dependencies
+node_modules/
+# Build outputs
+dist/
+web/dist/
+# Environment / secrets — NEVER commit real keys
+.env
+.env.*
+!.env.example
+# OS / editor
+.DS_Store
