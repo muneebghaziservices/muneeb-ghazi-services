@@ -89,6 +89,15 @@ export default function App() {
     [services, selectedId],
   );
 
+  // Tutorial video is TikTok-only: it floats only for a logged-in user on the
+  // store view with a TikTok context — the TikTok filter, or a TikTok service
+  // selected under 'All'. Hidden on login/auth, dashboard/admin, non-TikTok
+  // filters, and with 'All' + nothing selected.
+  const isTikTokActive =
+    profile !== null &&
+    view === 'store' &&
+    (platform === 'TikTok' || (platform === 'All' && selected?.platform === 'TikTok'));
+
   // Group services for the dropdown (only the currently filtered platform set).
   const groups = useMemo(() => {
     const map = new Map<string, Service[]>();
@@ -126,11 +135,15 @@ export default function App() {
   async function handleOrderPlaced(code: string, firstOrder: boolean, order: Order) {
     setOrders((o) => [order, ...o]);
     setOrderOpen(false);
-    setOrderSuccess({ code, firstOrder });
+    // First-order tutorial video is TikTok-only: resolve the ordered service's
+    // platform from the services list by the order's service id, falling back
+    // to the selected service if the order carries no service id.
+    const orderedService = services.find((s) => s.id === order.serviceId) ?? selected;
+    setOrderSuccess({ code, firstOrder, firstOrderTikTok: firstOrder && orderedService?.platform === 'TikTok' });
     void loadMe();
   }
 
-  const [orderSuccess, setOrderSuccess] = useState<{ code: string; firstOrder: boolean } | null>(null);
+  const [orderSuccess, setOrderSuccess] = useState<{ code: string; firstOrder: boolean; firstOrderTikTok: boolean } | null>(null);
 
   return (
     <div className="app">
@@ -289,8 +302,8 @@ export default function App() {
 
       <footer className="footer">Muneeb Ghazi Services — TikTok · Instagram · Facebook · YouTube growth.</footer>
 
-      {/* Floating tutorial video — right side, gentle bob, tap to play/pause, X to close */}
-      {showFloatVideo && (
+      {/* Floating tutorial video — TikTok-only, right side, gentle bob, tap to play/pause, X to close */}
+      {showFloatVideo && isTikTokActive && (
         <FloatingVideo onClose={() => setShowFloatVideo(false)} />
       )}
 
@@ -482,15 +495,15 @@ function OrderSheet({ service, profile, onClose, onPlaced }: {
 }
 
 function OrderSuccessSheet({ success, toast, onClose }: {
-  success: { code: string; firstOrder: boolean };
+  success: { code: string; firstOrder: boolean; firstOrderTikTok: boolean };
   toast: (m: string, e?: boolean) => void; onClose: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   useEffect(() => {
-    if (success.firstOrder) {
+    if (success.firstOrderTikTok) {
       videoRef.current?.play().catch(() => { /* autoplay may be blocked; user can tap */ });
     }
-  }, [success.firstOrder]);
+  }, [success.firstOrderTikTok]);
   return (
     <div className="overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="sheet" role="dialog" aria-label="Order placed">
@@ -505,7 +518,7 @@ function OrderSuccessSheet({ success, toast, onClose }: {
           <button type="button" className="btn btn-sm" onClick={async () => { await copyText(success.code); toast('Order code copied.'); }}>Copy code</button>
         </div>
         <p className="sub" style={{ textAlign: 'center' }}>Save your code — you can track this order in My Dashboard.</p>
-        {success.firstOrder && (
+        {success.firstOrderTikTok && (
           <>
             <p className="video-caption">Before placing your order, please make sure this setting is ON — watch this video</p>
             <div className="video-box">
