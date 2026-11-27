@@ -11,6 +11,17 @@ import AdminPanel from './AdminPanel';
 
 const PLATFORMS = ['All', 'TikTok', 'Instagram', 'Facebook', 'YouTube'] as const;
 type Platform = (typeof PLATFORMS)[number];
+const PLATFORM_LABEL: Record<Platform, string> = {
+  All: '🔥 All platforms',
+  TikTok: '♪ TikTok',
+  Instagram: '◉ Instagram',
+  Facebook: '👍 Facebook',
+  YouTube: '▶ YouTube',
+};
+const TICKER_ITEMS = [
+  'YouTube Subs', 'Facebook Growth', 'Views That Hit', 'Comments & Shares',
+  'Watch Time', 'Live Viewers', 'TikTok For You', 'Followers That Stay',
+];
 type View = 'store' | 'dashboard' | 'admin';
 
 interface Toast { id: number; msg: string; err?: boolean }
@@ -151,7 +162,7 @@ export default function App() {
         <div className="brand">
           <div className="brand-mark">MG</div>
           <div>
-            <h1>Muneeb Ghazi Services</h1>
+            <h1>Muneeb Ghazi <span className="lime">Services</span></h1>
             <small>Grow your socials — fast, real, affordable.</small>
           </div>
         </div>
@@ -161,7 +172,9 @@ export default function App() {
             <>
               <button type="button" className="btn" onClick={() => setView('dashboard')}>My Dashboard</button>
               {canAdmin && <button type="button" className="btn" onClick={() => setView('admin')}>Admin Panel</button>}
-              <button type="button" className="btn btn-ghost" onClick={logout}>Log out ({profile.name})</button>
+              <span className="user-chip">{profile.name}</span>
+              {isAdmin && <span className="admin-badge">ADMIN</span>}
+              <button type="button" className="btn btn-ghost" onClick={logout}>Sign out</button>
             </>
           ) : (
             <>
@@ -175,12 +188,12 @@ export default function App() {
       {profile && (
         <>
           <div className="stats" aria-label="Account summary">
-            <div className="stat"><small>Balance</small><b>{fmtRs(profile.balancePaisa)}</b></div>
-            <div className="stat"><small>Total Spent</small><b>{fmtRs(profile.totalSpentPaisa)}</b></div>
-            <div className="stat"><small>Total Orders</small><b>{profile.totalOrders || orders.length}</b></div>
+            <div className="stat"><small>▤ Balance</small><b>{fmtRs(profile.balancePaisa)}</b><div className="stat-bar lime"><i style={{ width: '88%' }} /></div></div>
+            <div className="stat"><small>↗ Total Spent</small><b>{fmtRs(profile.totalSpentPaisa)}</b><div className="stat-bar cyan"><i style={{ width: '15%' }} /></div></div>
+            <div className="stat"><small>▦ Total Orders</small><b>{profile.totalOrders || orders.length}</b><div className="stat-bar red"><i style={{ width: '10%' }} /></div></div>
           </div>
           <div className="add-funds-wrap">
-            <button type="button" className="btn btn-primary" onClick={() => setFundsOpen(true)}>+ Add funds</button>
+            <button type="button" className="add-funds-pill" onClick={() => setFundsOpen(true)}>+ Add funds</button>
           </div>
         </>
       )}
@@ -203,18 +216,48 @@ export default function App() {
       ) : (
         <main>
           <section className="hero">
-            <h2>Grow on <em>For You</em>.<br />Get seen. Get followed.</h2>
-            <p>TikTok likes, views and followers — plus Instagram, Facebook and YouTube coming soon. Pick a service, place your order, and watch it grow.</p>
+            <div className="hero-card">
+              <span className="live-pill"><span className="dot" />PANEL LIVE — ORDERS OPEN</span>
+              <h2 className="hero-title">Numbers go<br /><span className="lime">UP</span> <span className="outline">from here.</span></h2>
+              <p className="hero-sub">Followers, likes, views &amp; more for TikTok, Instagram, Facebook and YouTube. Top up your balance, pick a service, drop your link — done.</p>
+              <div className="hero-mini">
+                <span className="hero-mini-pill">⚡ Fast start</span>
+                <button type="button" className="hero-mini-pill" onClick={() => { if (!profile) { setAuthOpen(true); toast('Please log in or sign up to add funds.'); } else setFundsOpen(true); }}>🛡 JazzCash &amp; bank pay</button>
+                <button type="button" className="hero-mini-pill" onClick={() => setChatOpen(true)}>💬 Live support chat</button>
+              </div>
+              <span className="hero-chip hero-chip-tiktok" aria-hidden="true">♪ TikTok</span>
+              <span className="hero-chip hero-chip-ig" aria-hidden="true">◉ Instagram</span>
+              <span className="hero-chip hero-chip-yt" aria-hidden="true">▶ YouTube</span>
+              <span className="hero-chip hero-chip-fb" aria-hidden="true">👍 Facebook</span>
+            </div>
           </section>
+
+          <div className="ticker" aria-hidden="true">
+            <div className="ticker-track">
+              {[...TICKER_ITEMS, ...TICKER_ITEMS].map((t, i) => <span key={i}>🔥 {t}</span>)}
+            </div>
+          </div>
+
+          <div className="quick-cards">
+            <button type="button" className="quick-card" onClick={() => { if (!profile) { setAuthOpen(true); toast('Please log in or sign up to add funds.'); } else setFundsOpen(true); }}>
+              <span className="qc-icon lime">+</span>
+              <span><b>Add funds</b><small>JazzCash / bank QR pay</small></span>
+            </button>
+            <button type="button" className="quick-card" onClick={() => { if (!profile) { setAuthOpen(true); toast('Please log in or sign up to see your orders.'); } else setView('dashboard'); }}>
+              <span className="qc-icon red">▣</span>
+              <span><b>My orders</b><small>{orders.length} placed so far</small></span>
+            </button>
+          </div>
 
           <div className="chips" role="tablist" aria-label="Platform filter">
             {PLATFORMS.map((p) => (
               <button key={p} type="button" role="tab" aria-selected={platform === p}
                 className={`chip${platform === p ? ' active' : ''}`}
                 onClick={() => { setPlatform(p); setSelectedId(null); }}>
-                {p}
+                {PLATFORM_LABEL[p]}
               </button>
             ))}
+            <button type="button" className="chip" onClick={() => toast('More platforms coming soon.')}>⋯ More</button>
           </div>
 
           {bootstrapError && (
@@ -224,7 +267,9 @@ export default function App() {
           )}
           {loading && <p style={{ color: 'var(--muted)' }}>Loading services…</p>}
 
-          <h2 className="section-title">For You Services</h2>
+          <h2 className="section-title">For You <span className="lime">Services</span></h2>
+          <p className="svc-sub">Choose from the price dropdown — the full description of what you get updates with your selection.</p>
+          <p className="price-list-label">Service — Price List</p>
 
           {/* Grouped dropdown — category headers are solid volt-lime bars with counts */}
           <div className="dropdown">
@@ -254,6 +299,10 @@ export default function App() {
 
           {selected && (
             <div className="detail">
+              <div className="detail-pills">
+                <span className="detail-pill platform">{selected.platform}</span>
+                <span className="detail-pill cat">{selected.category}</span>
+              </div>
               <h3>{selected.title}</h3>
               <p className="desc">{selected.description || 'No description yet.'}</p>
               <div className="meta">
@@ -307,10 +356,15 @@ export default function App() {
         <FloatingVideo onClose={() => setShowFloatVideo(false)} />
       )}
 
-      {/* Support chat bubble — bottom-left */}
+      {/* Floating admin button — bottom-left */}
+      {profile && canAdmin && (
+        <button type="button" className="admin-float" onClick={() => setView('admin')}>▦ Admin panel</button>
+      )}
+
+      {/* Support chat bubble — bottom-right */}
       <div className="chat-bubble-wrap">
-        <button type="button" className="chat-bubble" aria-label="Support chat" onClick={() => setChatOpen((o) => !o)}>💬</button>
         <span className="chat-bubble-label" role="button" aria-label="Live Chat Support — open support chat" onClick={() => setChatOpen((o) => !o)}>Live Chat Support</span>
+        <button type="button" className="chat-bubble" aria-label="Support chat" onClick={() => setChatOpen((o) => !o)}>💬</button>
       </div>
       {chatOpen && (
         <ChatPanel profile={profile} toast={toast} onClose={() => setChatOpen(false)} onNeedAuth={() => setAuthOpen(true)} />
