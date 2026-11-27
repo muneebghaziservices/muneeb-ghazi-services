@@ -114,6 +114,16 @@ export default function App() {
     [services, selectedId],
   );
 
+  // Service-cards grid: once a service is selected, show only its own
+  // category's packages (same platform AND same category as the selected
+  // service). With nothing selected, show all visible services as before.
+  const gridServices = useMemo(
+    () => (selected
+      ? visibleServices.filter((s) => s.platform === selected.platform && s.category === selected.category)
+      : visibleServices),
+    [visibleServices, selected],
+  );
+
   // Tutorial video is TikTok-only: it floats only for a logged-in user on the
   // store view with a TikTok context — the TikTok filter, or a TikTok service
   // selected under 'All'. Hidden on login/auth, dashboard/admin, non-TikTok
@@ -341,9 +351,9 @@ export default function App() {
             </div>
           )}
 
-          {showServiceCards && visibleServices.length > 0 && (
+          {showServiceCards && gridServices.length > 0 && (
             <div className="cards" style={{ marginTop: 18 }}>
-              {visibleServices.map((s) => (
+              {gridServices.map((s) => (
                 <button key={s.id} type="button" onClick={() => pickService(s)}
                   className={`svc-card${selectedId === s.id ? ' selected' : ''}`}>
                   <span className="platform">{s.platform} · {s.category}</span>
