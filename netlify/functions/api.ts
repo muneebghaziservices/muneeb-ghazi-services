@@ -215,6 +215,16 @@ function qrPublicUrl(path: string): string {
   return db().storage.from('qrs').getPublicUrl(path).data.publicUrl;
 }
 
+// Proofs live in the PRIVATE 'proofs' bucket, so they need a fresh signed
+// URL each time an admin (or the customer) views one — a public URL would
+// 403. Signed URLs last 1 hour; lists re-fetch them on every load.
+async function proofSignedUrl(path: string | null): Promise<string | null> {
+  if (!path) return null;
+  const { data, error } = await db().storage.from('proofs').createSignedUrl(path, 3600);
+  if (error || !data?.signedUrl) return null;
+  return data.signedUrl;
+}
+
 function requireFields(params: Record<string, unknown>, fields: string[]): void {
   for (const f of fields) {
     const v = params[f];
@@ -330,10 +340,12 @@ async function getme(p: Params, token: string | null) {
     db().from('orders').select('*').eq('profile_id', me.id).order('created_at', { ascending: false }),
     db().from('fund_requests').select('*').eq('profile_id', me.id).order('created_at', { ascending: false }),
   ]);
+  const fundRows = (funds.data ?? []) as any[];
+  const fundUrls = await Promise.all(fundRows.map((r) => proofSignedUrl(r.proof_path ?? null)));
   return {
     profile: publicProfile(me),
     orders: orders.data ?? [],
-    fundRequests: funds.data ?? [],
+    fundRequests: fundRows.map((r, i) => ({ ...r, proof_url: fundUrls[i] })),
   };
 }
 
@@ -772,7 +784,9 @@ async function listFunds(_p: Params, token: string | null) {
     .order('created_at', { ascending: false })
     .limit(500);
   if (error) throw new Error(error.message);
-  return { fundRequests: data ?? [] };
+  const rows = (data ?? []) as any[];
+  const urls = await Promise.all(rows.map((r) => proofSignedUrl(r.proof_path ?? null)));
+  return { fundRequests: rows.map((r, i) => ({ ...r, proof_url: urls[i] })) };
 }
 
 async function resolveFund(p: Params, token: string | null) {
@@ -1057,6 +1071,26 @@ async function sendMessage(p: Params, token: string | null) {
   return { message: data, conversation: { ...conv, messages: allMessages ?? [] } };
 }
 
+// Latest message per conversation (inbox previews + unread badges). The
+// conversations table holds no message text, so the list endpoint used to
+// return no messages at all and the inbox preview always read
+// "No messages yet." — the preview now comes from here.
+async function lastMessagesByConversation(ids: string[]): Promise<Map<string, any>> {
+  if (ids.length === 0) return new Map();
+  const { data, error } = await db()
+    .from('messages')
+    .select('id, conversation_id, sender_role, sender_name, body, created_at')
+    .in('conversation_id', ids)
+    .order('created_at', { ascending: false })
+    .limit(1000);
+  if (error) throw new Error(error.message);
+  const map = new Map<string, any>();
+  for (const m of (data ?? []) as any[]) {
+    if (!map.has(m.conversation_id)) map.set(m.conversation_id, m);
+  }
+  return map;
+}
+
 async function listConversations(_p: Params, token: string | null) {
   const me = await requireAuth(token);
   requirePerm(me, 'messages');
@@ -1066,11 +1100,41 @@ async function listConversations(_p: Params, token: string | null) {
     .order('created_at', { ascending: false })
     .limit(200);
   if (error) throw new Error(error.message);
+  const rows = (data ?? []) as any[];
+  const last = await lastMessagesByConversation(rows.map((c: any) => c.id));
   return {
-    conversations: (data ?? []).map((c: any) => ({
+    conversations: rows.map((c: any) => ({
       ...c,
       customer_name: c.profiles?.display_name ?? '',
       customer_id: c.profile_id,
+      last_message: last.get(c.id) ?? null,
+    })),
+  };
+}
+
+// One lightweight call for the Admin Panel's red badges + new-arrival
+// alerts: pending fund requests, pending orders, and every conversation
+// with its latest message (for unread detection). Admin only.
+async function getAdminAlerts(_p: Params, token: string | null) {
+  const me = await requireAuth(token);
+  requireAdmin(me);
+  const [convRes, fundsRes, ordersRes] = await Promise.all([
+    db().from('conversations').select('*, profiles(display_name)').order('created_at', { ascending: false }).limit(200),
+    db().from('fund_requests').select('id', { count: 'exact', head: true }).eq('status', 'Pending'),
+    db().from('orders').select('id', { count: 'exact', head: true }).eq('status', 'Pending'),
+  ]);
+  if (convRes.error) throw new Error(convRes.error.message);
+  const rows = (convRes.data ?? []) as any[];
+  const last = await lastMessagesByConversation(rows.map((c: any) => c.id));
+  return {
+    pendingFunds: fundsRes.count ?? 0,
+    pendingOrders: ordersRes.count ?? 0,
+    conversations: rows.map((c: any) => ({
+      id: c.id,
+      customer_name: c.profiles?.display_name ?? '',
+      customer_id: c.profile_id,
+      status: c.status,
+      last_message: last.get(c.id) ?? null,
     })),
   };
 }
@@ -1342,6 +1406,7 @@ const ACTIONS: Record<string, (p: Params, token: string | null) => Promise<unkno
   getConversation,
   sendMessage,
   listConversations,
+  getAdminAlerts,
   setConversationStatus,
 };
 

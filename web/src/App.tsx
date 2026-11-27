@@ -63,7 +63,8 @@ export default function App() {
   const [fundsOpen, setFundsOpen] = useState(false);
   const [orders, setOrders] = useState<Order[]>([]);
   const [fundRequests, setFundRequests] = useState<FundRequest[]>([]);
-  const [showFloatVideo, setShowFloatVideo] = useState(true);
+  const [tutorialClosedOnce, setTutorialClosedOnce] = useState(false);
+  const [showTutorialModal, setShowTutorialModal] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
 
   const toast = useCallback((msg: string, err = false) => {
@@ -114,24 +115,16 @@ export default function App() {
     [services, selectedId],
   );
 
-  // Service-cards grid: once a service is selected, show only its own
-  // category's packages (same platform AND same category as the selected
-  // service). With nothing selected, show all visible services as before.
+  // Service-cards grid: hidden until a service is selected. Once one is
+  // picked, show only its own category's packages (same platform AND same
+  // category as the selected service). The admin "Show service cards"
+  // toggle still applies on top (off = never show).
   const gridServices = useMemo(
     () => (selected
       ? visibleServices.filter((s) => s.platform === selected.platform && s.category === selected.category)
-      : visibleServices),
+      : []),
     [visibleServices, selected],
   );
-
-  // Tutorial video is TikTok-only: it floats only for a logged-in user on the
-  // store view with a TikTok context — the TikTok filter, or a TikTok service
-  // selected under 'All'. Hidden on login/auth, dashboard/admin, non-TikTok
-  // filters, and with 'All' + nothing selected.
-  const isTikTokActive =
-    profile !== null &&
-    view === 'store' &&
-    (platform === 'TikTok' || (platform === 'All' && selected?.platform === 'TikTok'));
 
   // Group services for the dropdown (only the currently filtered platform set).
   const groups = useMemo(() => {
@@ -344,6 +337,12 @@ export default function App() {
             </div>
           )}
 
+          {tutorialClosedOnce && !showTutorialModal && profile && (platform === 'TikTok' || selected?.platform === 'TikTok') && (
+            <button type="button" className="btn" style={{ marginTop: 14 }} onClick={() => setShowTutorialModal(true)}>
+              ▶ Must Watch — watch the tutorial video again
+            </button>
+          )}
+
           {platform !== 'All' && platform !== 'TikTok' && (
             <div className="empty" style={{ marginTop: 16 }}>
               <b>{platform} services — coming soon</b>
@@ -375,11 +374,6 @@ export default function App() {
 
       <footer className="footer">Muneeb Ghazi Services — TikTok · Instagram · Facebook · YouTube growth.</footer>
 
-      {/* Floating tutorial video — TikTok-only, right side, gentle bob, tap to play/pause, X to close */}
-      {showFloatVideo && isTikTokActive && (
-        <FloatingVideo onClose={() => setShowFloatVideo(false)} />
-      )}
-
       {/* Floating admin button — bottom-left */}
       {profile && canAdmin && (
         <button type="button" className="admin-float" onClick={() => setView('admin')}>▦ Admin panel</button>
@@ -405,8 +399,11 @@ export default function App() {
       )}
 
       {orderSuccess && (
-        <OrderSuccessSheet success={orderSuccess} toast={toast} onClose={() => setOrderSuccess(null)} />
+        <OrderSuccessSheet success={orderSuccess} toast={toast}
+          onClose={() => { if (orderSuccess.firstOrderTikTok) setTutorialClosedOnce(true); setOrderSuccess(null); }}
+          onVideoClose={() => setTutorialClosedOnce(true)} />
       )}
+      {showTutorialModal && <TutorialModal onClose={() => setShowTutorialModal(false)} />}
 
       {fundsOpen && profile && (
         <AddFundsSheet methods={methods} toast={toast}
@@ -578,11 +575,12 @@ function OrderSheet({ service, profile, onClose, onPlaced }: {
   );
 }
 
-function OrderSuccessSheet({ success, toast, onClose }: {
+function OrderSuccessSheet({ success, toast, onClose, onVideoClose }: {
   success: { code: string; firstOrder: boolean; firstOrderTikTok: boolean };
-  toast: (m: string, e?: boolean) => void; onClose: () => void;
+  toast: (m: string, e?: boolean) => void; onClose: () => void; onVideoClose?: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [videoHidden, setVideoHidden] = useState(false);
   useEffect(() => {
     if (success.firstOrderTikTok) {
       videoRef.current?.play().catch(() => { /* autoplay may be blocked; user can tap */ });
@@ -602,14 +600,39 @@ function OrderSuccessSheet({ success, toast, onClose }: {
           <button type="button" className="btn btn-sm" onClick={async () => { await copyText(success.code); toast('Order code copied.'); }}>Copy code</button>
         </div>
         <p className="sub" style={{ textAlign: 'center' }}>Save your code — you can track this order in My Dashboard.</p>
-        {success.firstOrderTikTok && (
+        {success.firstOrderTikTok && !videoHidden && (
           <>
-            <p className="video-caption">Before placing your order, please make sure this setting is ON — watch this video</p>
-            <div className="video-box">
+            <p className="video-caption">⭐ <b>Must Watch</b> — Before placing your order, please make sure this setting is ON — watch this video</p>
+            <div className="video-box" style={{ position: 'relative' }}>
+              <button type="button" className="x-btn" style={{ position: 'absolute', top: 8, right: 8, zIndex: 2 }} onClick={() => { setVideoHidden(true); onVideoClose?.(); }} aria-label="Close video">✕</button>
               <video ref={videoRef} src="/tutorial.mp4" controls autoPlay playsInline />
             </div>
           </>
         )}
+        <button type="button" className="btn btn-primary btn-block" onClick={onClose}>Done</button>
+      </div>
+    </div>
+  );
+}
+
+/* ================= Tutorial video (reopenable) ================= */
+
+function TutorialModal({ onClose }: { onClose: () => void }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    videoRef.current?.play().catch(() => { /* autoplay may be blocked; user can tap */ });
+  }, []);
+  return (
+    <div className="overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="sheet" role="dialog" aria-label="Tutorial video">
+        <div className="sheet-head">
+          <h3>⭐ Must Watch</h3>
+          <button type="button" className="x-btn" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+        <p className="video-caption">Before placing your order, please make sure this setting is ON — watch this video</p>
+        <div className="video-box">
+          <video ref={videoRef} src="/tutorial.mp4" controls autoPlay playsInline />
+        </div>
         <button type="button" className="btn btn-primary btn-block" onClick={onClose}>Done</button>
       </div>
     </div>
@@ -714,15 +737,48 @@ function Dashboard({ profile, orders, fundRequests, methods, toast, onRefresh, o
   onAddFunds: () => void; onCancelOrder: (id: string) => void;
 }) {
   const [tab, setTab] = useState<'orders' | 'funds' | 'referral' | 'password'>('orders');
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [menuOpen]);
+  const menuItems = [
+    { id: 'orders', label: 'My Orders', count: orders.length },
+    { id: 'funds', label: 'My Fund Request', count: fundRequests.length },
+    { id: 'referral', label: 'Referral Earn', count: null },
+    { id: 'password', label: 'Change Password', count: null },
+    { id: 'addfunds', label: 'Add Funds', count: null },
+  ] as const;
   return (
     <main>
-      <h2 className="section-title">My Dashboard — {profile.name}</h2>
-      <div className="tabs">
-        <button type="button" className={`tab${tab === 'orders' ? ' active' : ''}`} onClick={() => setTab('orders')}>My Orders ({orders.length})</button>
-        <button type="button" className={`tab${tab === 'funds' ? ' active' : ''}`} onClick={() => setTab('funds')}>My Fund Requests ({fundRequests.length})</button>
-        <button type="button" className={`tab${tab === 'referral' ? ' active' : ''}`} onClick={() => setTab('referral')}>Refer &amp; Earn</button>
-        <button type="button" className={`tab${tab === 'password' ? ' active' : ''}`} onClick={() => setTab('password')}>Change Password</button>
-        <button type="button" className="tab" onClick={onAddFunds}>+ Add funds</button>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <h2 className="section-title" style={{ margin: 0 }}>My Dashboard — {profile.name}</h2>
+        <div ref={menuRef} style={{ position: 'relative', flexShrink: 0 }}>
+          <button type="button" className="btn" onClick={() => setMenuOpen((v) => !v)} aria-label="Dashboard menu" aria-expanded={menuOpen}>
+            ☰ Menu
+          </button>
+          {menuOpen && (
+            <div className="panel" style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', minWidth: 220, width: 'max-content', maxWidth: '86vw', zIndex: 30, padding: 6 }}>
+              {menuItems.map((it) => (
+                <button key={it.id} type="button" className="btn btn-block" style={{ justifyContent: 'flex-start', marginBottom: 4 }}
+                  onClick={() => {
+                    setMenuOpen(false);
+                    if (it.id === 'addfunds') { onAddFunds(); return; }
+                    setTab(it.id as 'orders' | 'funds' | 'referral' | 'password');
+                  }}>
+                  {it.label}
+                  {it.count !== null ? ` (${it.count})` : ''}
+                  {it.id !== 'addfunds' && tab === it.id ? ' ✓' : ''}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
       {tab === 'orders' && (
         <div className="panel">
@@ -928,29 +984,7 @@ function ChangePasswordPanel({ toast }: { toast: (m: string, e?: boolean) => voi
   );
 }
 
-/* ================= Floating video + chat ================= */
-
-function FloatingVideo({ onClose }: { onClose: () => void }) {
-  const ref = useRef<HTMLVideoElement>(null);
-  const [playing, setPlaying] = useState(false);
-  function toggle() {
-    const v = ref.current;
-    if (!v) return;
-    if (v.paused) { void v.play(); } else { v.pause(); }
-  }
-  return (
-    <div className="float-video" role="complementary" aria-label="Tutorial video">
-      <button type="button" className="x" onClick={onClose} aria-label="Close tutorial video">✕</button>
-      <video ref={ref} src="/tutorial.mp4" muted loop playsInline preload="metadata"
-        onClick={toggle} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)}
-        title="Tap to play / pause" />
-      <div className="cap" onClick={toggle} style={{ cursor: 'pointer' }}>
-        <b>{playing ? '⏸ Playing' : '▶ Tap to play'}</b><br />
-        Before placing your order, please make sure this setting is ON — watch this video
-      </div>
-    </div>
-  );
-}
+/* ================= Chat ================= */
 
 function ChatPanel({ profile, toast, onClose, onNeedAuth, onOpenAdmin }: {
   profile: Profile | null; toast: (m: string, e?: boolean) => void;
@@ -967,10 +1001,10 @@ function ChatPanel({ profile, toast, onClose, onNeedAuth, onOpenAdmin }: {
   // an id (which used to fail with "Missing field: conversationId").
   const loadRef = useRef<Promise<Conversation | null> | null>(null);
 
-  const load = useCallback((): Promise<Conversation | null> => {
+  const load = useCallback((quiet = false): Promise<Conversation | null> => {
     if (!profile) return Promise.resolve(null);
     if (!loadRef.current) {
-      setLoading(true);
+      if (!quiet) setLoading(true);
       loadRef.current = (async (): Promise<Conversation | null> => {
         try {
           const d = await api<{ conversation?: Record<string, unknown> }>('getConversation', {});
@@ -981,20 +1015,37 @@ function ChatPanel({ profile, toast, onClose, onNeedAuth, onOpenAdmin }: {
           }
           return null;
         } catch (e) { setErr(e instanceof Error ? e.message : 'Chat could not be loaded.'); return null; }
-        finally { setLoading(false); loadRef.current = null; }
+        finally { if (!quiet) setLoading(false); loadRef.current = null; }
       })();
     }
     return loadRef.current;
   }, [profile]);
 
   useEffect(() => { void load(); }, [load]);
+  // Live chat: refresh every 3s while the panel is open so the admin's
+  // replies appear promptly (previously it loaded once and never updated).
+  // Quiet refreshes never touch the loading spinner or the Send button.
+  useEffect(() => {
+    if (!profile) return;
+    const t = window.setInterval(() => {
+      if (document.hidden) return;
+      void load(true);
+    }, 3000);
+    return () => window.clearInterval(t);
+  }, [profile, load]);
   useEffect(() => { bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight }); }, [conv?.messages.length]);
 
   async function send(e: React.FormEvent) {
     e.preventDefault();
     if (!profile) { onNeedAuth(); toast('Please log in to chat with support.'); return; }
     if (!body.trim() || busy) return;
+    const text = body.trim();
     setBusy(true);
+    // Show the message instantly (optimistic) — the next poll replaces the
+    // whole thread with the server list, so it can never duplicate.
+    const tmpId = `tmp-${Date.now()}`;
+    setConv((prev) => prev ? { ...prev, messages: [...prev.messages, { id: tmpId, sender: 'customer', senderName: '', body: text, createdAt: new Date().toISOString() }] } : prev);
+    setBody('');
     try {
       // Never send without a conversation: wait for the thread to load
       // (or be created) first, so a quick first message cannot fail with
@@ -1002,13 +1053,15 @@ function ChatPanel({ profile, toast, onClose, onNeedAuth, onOpenAdmin }: {
       const c = conv?.id ? conv : await load();
       if (!c?.id) throw new Error('Chat could not be loaded. Please try again.');
       const d = await api<{ conversation?: Record<string, unknown> }>('sendMessage', {
-        conversationId: c.id, body: body.trim(),
+        conversationId: c.id, body: text,
       });
       if (d.conversation) setConv(normConversation(d.conversation));
-      else setConv((prev) => prev ? { ...prev, messages: [...prev.messages, { id: `tmp-${Date.now()}`, sender: 'customer', body: body.trim(), createdAt: new Date().toISOString() }] } : prev);
-      setBody('');
       setErr('');
-    } catch (e2) { setErr(e2 instanceof Error ? e2.message : 'Message failed to send.'); } finally { setBusy(false); }
+    } catch (e2) {
+      // Roll the optimistic message back so a failed send never looks sent.
+      setConv((prev) => prev ? { ...prev, messages: prev.messages.filter((m) => m.id !== tmpId) } : prev);
+      setErr(e2 instanceof Error ? e2.message : 'Message failed to send.');
+    } finally { setBusy(false); }
   }
 
   const isMine = (m: { sender: string }) =>

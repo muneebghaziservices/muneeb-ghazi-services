@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   api, copyText, fileToBase64, fmtRs, normConversation, normFund, normMethod,
   normOrder, normProfile, normService, normWithdrawal,
@@ -13,27 +13,165 @@ type Tab = 'services' | 'orders' | 'funds' | 'methods' | 'messages' | 'team' | '
 
 const ORDER_STATUSES = ['Pending', 'In Progress', 'Completed', 'Cancelled'];
 
+/* ================= Admin alerts (badges + sound) ================= */
+// Unread state lives in this browser only (localStorage): the admin's
+// device remembers the latest message id it has seen per conversation.
+// A conversation counts as unread when its latest message is from the
+// customer and its id differs from the seen one. Opening the thread
+// marks it seen. (Cross-device read state would need a last_read column
+// in the DB — not built; this device's badge is exact.)
+
+const SEEN_KEY = 'mgs_seen_msgs';
+
+function readSeen(): Record<string, string> {
+  try {
+    const v = JSON.parse(localStorage.getItem(SEEN_KEY) || '{}');
+    return v && typeof v === 'object' ? (v as Record<string, string>) : {};
+  } catch { return {}; }
+}
+
+function writeSeen(map: Record<string, string>) {
+  try { localStorage.setItem(SEEN_KEY, JSON.stringify(map)); } catch { /* private mode */ }
+}
+
+let audioCtx: AudioContext | null = null;
+function beep() {
+  try {
+    const AC = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AC) return;
+    audioCtx = audioCtx ?? new AC();
+    if (audioCtx.state === 'suspended') void audioCtx.resume();
+    const t0 = audioCtx.currentTime;
+    [880, 660].forEach((freq, i) => {
+      const o = audioCtx!.createOscillator();
+      const g = audioCtx!.createGain();
+      o.type = 'sine';
+      o.frequency.value = freq;
+      g.gain.setValueAtTime(0.0001, t0 + i * 0.14);
+      g.gain.exponentialRampToValueAtTime(0.25, t0 + i * 0.14 + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + i * 0.14 + 0.13);
+      o.connect(g).connect(audioCtx!.destination);
+      o.start(t0 + i * 0.14);
+      o.stop(t0 + i * 0.14 + 0.14);
+    });
+  } catch { /* sound is best-effort; the red badge + banner still show */ }
+}
+
+type AlertConversation = {
+  id: string;
+  customer_name?: string;
+  status: string;
+  last_message?: { id: string; body: string; sender_role: string; created_at: string } | null;
+};
+
+type AdminAlerts = { pendingFunds: number; pendingOrders: number; conversations: AlertConversation[] };
+
 export default function AdminPanel({ profile, toast, onBack }: {
   profile: Profile; toast: (m: string, e?: boolean) => void; onBack: () => void;
 }) {
   const [tab, setTab] = useState<Tab>('services');
+  const [visited, setVisited] = useState<Tab[]>(['services']);
+  const [alerts, setAlerts] = useState<AdminAlerts | null>(null);
+  const [seen, setSeen] = useState<Record<string, string>>(readSeen);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+  const prevCounts = useRef({ unread: 0, pendingFunds: 0, pendingOrders: 0 });
+  const alertsInit = useRef(false);
   const can = (area: 'messages' | 'services' | 'orders' | 'funds') =>
     profile.role === 'admin' || Boolean(profile.permissions[area]);
+
+  const loadAlerts = useCallback(async () => {
+    if (profile.role !== 'admin') return;
+    try {
+      const d = await api<AdminAlerts>('getAdminAlerts');
+      setAlerts(d);
+    } catch { /* alerts are best-effort; tabs load on their own */ }
+  }, [profile.role]);
+  useEffect(() => { void loadAlerts(); }, [loadAlerts]);
+  useEffect(() => {
+    if (profile.role !== 'admin') return;
+    const t = window.setInterval(() => {
+      if (document.hidden) return;
+      void loadAlerts();
+    }, 5000);
+    return () => window.clearInterval(t);
+  }, [profile.role, loadAlerts]);
+
+  const unreadCount = alerts?.conversations.filter(
+    (c) => c.last_message && c.last_message.sender_role === 'customer' && seen[c.id] !== c.last_message.id,
+  ).length ?? 0;
+  const pendingFunds = alerts?.pendingFunds ?? 0;
+  const pendingOrders = alerts?.pendingOrders ?? 0;
+
+  // New arrivals while the panel is open: red toast + sound + banner.
+  // The first load only seeds the counts (existing items are not "new").
+  useEffect(() => {
+    if (!alerts) return;
+    if (!alertsInit.current) {
+      alertsInit.current = true;
+      prevCounts.current = { unread: unreadCount, pendingFunds, pendingOrders };
+      return;
+    }
+    const prev = prevCounts.current;
+    const grew = unreadCount > prev.unread || pendingFunds > prev.pendingFunds || pendingOrders > prev.pendingOrders;
+    if (grew) {
+      setBannerDismissed(false);
+      if (unreadCount > prev.unread) toast('New customer message — check the Messages inbox.', true);
+      if (pendingFunds > prev.pendingFunds) toast('New fund request received — check the Funds tab.', true);
+      if (pendingOrders > prev.pendingOrders) toast('New order received.', true);
+      beep();
+    }
+    prevCounts.current = { unread: unreadCount, pendingFunds, pendingOrders };
+  }, [alerts, unreadCount, pendingFunds, pendingOrders, toast]);
+
+  const markSeen = useCallback((convId: string, msgId: string) => {
+    setSeen((prev) => {
+      if (prev[convId] === msgId) return prev;
+      const next = { ...prev, [convId]: msgId };
+      writeSeen(next);
+      return next;
+    });
+  }, []);
+
   const tabs = [
-    { id: 'services', label: 'Services', ok: can('services') },
-    { id: 'orders', label: 'Orders', ok: can('orders') },
-    { id: 'funds', label: 'Funds', ok: can('funds') },
-    { id: 'methods', label: 'Payments & QR', ok: profile.role === 'admin' },
-    { id: 'messages', label: 'Messages', ok: can('messages') },
-    { id: 'referrals', label: 'Referrals', ok: profile.role === 'admin' },
-    { id: 'withdrawals', label: 'Withdrawals', ok: can('funds') },
-    { id: 'team', label: 'Team & Users', ok: profile.role === 'admin' },
-  ].filter((t) => t.ok) as { id: Tab; label: string; ok: boolean }[];
+    { id: 'services', label: 'Services', ok: can('services'), badge: 0 },
+    { id: 'orders', label: 'Orders', ok: can('orders'), badge: pendingOrders },
+    { id: 'funds', label: 'Funds', ok: can('funds'), badge: pendingFunds },
+    { id: 'methods', label: 'Payments & QR', ok: profile.role === 'admin', badge: 0 },
+    { id: 'messages', label: 'Messages', ok: can('messages'), badge: unreadCount },
+    { id: 'referrals', label: 'Referrals', ok: profile.role === 'admin', badge: 0 },
+    { id: 'withdrawals', label: 'Withdrawals', ok: can('funds'), badge: 0 },
+    { id: 'team', label: 'Team & Users', ok: profile.role === 'admin', badge: 0 },
+  ].filter((t) => t.ok) as { id: Tab; label: string; ok: boolean; badge: number }[];
 
   useEffect(() => {
     if (!tabs.some((t) => t.id === tab) && tabs[0]) setTab(tabs[0].id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
+  // Visited tabs stay mounted (hidden) so switching back is instant and
+  // never refetches — the old unmount-on-switch made the panel feel slow.
+  useEffect(() => {
+    setVisited((v) => (v.includes(tab) ? v : [...v, tab]));
+  }, [tab]);
+
+  const renderTab = (id: Tab) => {
+    switch (id) {
+      case 'services': return <ServicesTab toast={toast} />;
+      case 'orders': return <OrdersTab toast={toast} />;
+      case 'funds': return <FundsTab toast={toast} />;
+      case 'methods': return <MethodsTab toast={toast} />;
+      case 'messages': return <MessagesTab toast={toast} seen={seen} onMarkSeen={markSeen} />;
+      case 'referrals': return <ReferralsTab toast={toast} />;
+      case 'withdrawals': return <WithdrawalsTab toast={toast} />;
+      case 'team': return <TeamTab toast={toast} />;
+    }
+    return null;
+  };
+
+  const alertParts = [
+    unreadCount > 0 ? `${unreadCount} unread message${unreadCount === 1 ? '' : 's'}` : null,
+    pendingFunds > 0 ? `${pendingFunds} pending fund request${pendingFunds === 1 ? '' : 's'}` : null,
+    pendingOrders > 0 ? `${pendingOrders} pending order${pendingOrders === 1 ? '' : 's'}` : null,
+  ].filter(Boolean);
 
   return (
     <main>
@@ -44,21 +182,28 @@ export default function AdminPanel({ profile, toast, onBack }: {
         <button type="button" className="btn btn-ghost btn-sm" onClick={onBack}>← Back to shop</button>
       </p>
       {profile.role === 'admin' && <DashboardStats />}
+      {profile.role === 'admin' && !bannerDismissed && alertParts.length > 0 && (
+        <div role="alert" style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', background: '#3a0d0d', border: '1px solid #ef4444', color: '#fecaca', borderRadius: 10, padding: '10px 12px', marginBottom: 12 }}>
+          <b>🔔 New:</b>
+          <span style={{ flex: '1 1 auto' }}>{alertParts.join(' · ')}</span>
+          {unreadCount > 0 && <button type="button" className="btn btn-sm" onClick={() => setTab('messages')}>Open Messages</button>}
+          {pendingFunds > 0 && <button type="button" className="btn btn-sm" onClick={() => setTab('funds')}>Open Funds</button>}
+          <button type="button" className="btn btn-sm" onClick={() => setBannerDismissed(true)} aria-label="Dismiss">✕</button>
+        </div>
+      )}
       <div className="tabs">
         {tabs.map((t) => (
           <button key={t.id} type="button" className={`tab${tab === t.id ? ' active' : ''}`} onClick={() => setTab(t.id)}>
             {t.label}
+            {t.badge > 0 && <span style={{ marginLeft: 6, background: '#ef4444', color: '#fff', borderRadius: 999, padding: '1px 7px', fontSize: 12, fontWeight: 700 }}>{t.badge}</span>}
           </button>
         ))}
       </div>
-      {tab === 'services' && <ServicesTab toast={toast} />}
-      {tab === 'orders' && <OrdersTab toast={toast} />}
-      {tab === 'funds' && <FundsTab toast={toast} />}
-      {tab === 'methods' && <MethodsTab toast={toast} />}
-      {tab === 'messages' && <MessagesTab toast={toast} />}
-      {tab === 'referrals' && <ReferralsTab toast={toast} />}
-      {tab === 'withdrawals' && <WithdrawalsTab toast={toast} />}
-      {tab === 'team' && <TeamTab toast={toast} />}
+      {visited.filter((id) => tabs.some((t) => t.id === id)).map((id) => (
+        <div key={id} style={tab === id ? undefined : { display: 'none' }}>
+          {renderTab(id)}
+        </div>
+      ))}
     </main>
   );
 }
@@ -84,6 +229,7 @@ function ServicesTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
   const [showSectionForm, setShowSectionForm] = useState(false);
   const [newSection, setNewSection] = useState({ platform: 'TikTok', category: '' });
   const [showServiceCards, setShowServiceCards] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -118,7 +264,7 @@ function ServicesTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
     try {
       const d = await api<{ services?: unknown[] }>('adminListServices');
       setList(((d.services ?? []) as Record<string, unknown>[]).map(normService));
-    } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load services.'); }
+    } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load services.'); } finally { setLoaded(true); }
     void loadSections();
     void loadCardsFlag();
   }, [loadSections, loadCardsFlag]);
@@ -183,7 +329,8 @@ function ServicesTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
 
   return (
     <div className="panel">
-      <h3>Services ({list.length})</h3>
+      <h3>Services{loaded ? ` (${list.length})` : ''}</h3>
+      {!loaded && <p style={{ color: 'var(--muted)' }}>Loading services…</p>}
       <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14, marginBottom: 12 }}>
         <input type="checkbox" checked={showServiceCards} onChange={(e) => void saveCardsFlag(e.target.checked)} />
         Show service cards in the shop (when off, only the services dropdown shows)
@@ -287,7 +434,7 @@ function ServicesTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
             </div>
           </div>
         ))}
-        {list.length === 0 && <p style={{ color: 'var(--muted)' }}>No services yet — add the first one above.</p>}
+        {loaded && list.length === 0 && <p style={{ color: 'var(--muted)' }}>No services yet — add the first one above.</p>}
       </div>
     </div>
   );
@@ -297,12 +444,13 @@ function ServicesTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
 
 function OrdersTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
   const [list, setList] = useState<Order[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState('');
   const load = useCallback(async () => {
     try {
       const d = await api<{ orders?: unknown[] }>('listOrders');
       setList(((d.orders ?? []) as Record<string, unknown>[]).map(normOrder));
-    } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load orders.'); }
+    } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load orders.'); } finally { setLoaded(true); }
   }, []);
   useEffect(() => { void load(); }, [load]);
 
@@ -313,8 +461,9 @@ function OrdersTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
 
   return (
     <div className="panel">
-      <h3>All Orders ({list.length})</h3>
+      <h3>All Orders{loaded ? ` (${list.length})` : ''}</h3>
       {err && <p className="error">{err}</p>}
+      {!loaded && <p style={{ color: 'var(--muted)' }}>Loading orders…</p>}
       {list.map((o) => (
         <div key={o.id} className="row-item">
           <div className="top">
@@ -334,7 +483,7 @@ function OrdersTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
           </div>
         </div>
       ))}
-      {list.length === 0 && <p style={{ color: 'var(--muted)' }}>No orders yet.</p>}
+      {loaded && list.length === 0 && <p style={{ color: 'var(--muted)' }}>No orders yet.</p>}
     </div>
   );
 }
@@ -344,6 +493,7 @@ function OrdersTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
 function FundsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
   const [list, setList] = useState<FundRequest[]>([]);
   const [methods, setMethods] = useState<PaymentMethod[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState('');
   const load = useCallback(async () => {
     try {
@@ -352,9 +502,18 @@ function FundsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
       setList(raw.map(normFund));
       const m = await api<{ methods?: unknown[] }>('listMethods');
       setMethods(((m.methods ?? []) as Record<string, unknown>[]).map(normMethod));
-    } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load fund requests.'); }
+    } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load fund requests.'); } finally { setLoaded(true); }
   }, []);
   useEffect(() => { void load(); }, [load]);
+  // Fresh list every 5s so a new fund request appears (and its red badge
+  // clears once resolved) without a manual reload.
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      if (document.hidden) return;
+      void load();
+    }, 5000);
+    return () => window.clearInterval(t);
+  }, [load]);
 
   async function resolve(fundId: string, approve: boolean) {
     try {
@@ -366,8 +525,9 @@ function FundsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
 
   return (
     <div className="panel">
-      <h3>Fund Requests ({list.length})</h3>
+      <h3>Fund Requests{loaded ? ` (${list.length})` : ''}</h3>
       {err && <p className="error">{err}</p>}
+      {!loaded && <p style={{ color: 'var(--muted)' }}>Loading fund requests…</p>}
       {list.map((f) => (
         <div key={f.id} className="row-item">
           <div className="top">
@@ -378,7 +538,15 @@ function FundsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
             {f.customerName ? `${f.customerName} · ` : ''}
             Method: {f.methodLabel || methods.find((m) => m.id === f.methodId)?.label || f.methodId}
             <br />Sender: {f.senderName}
-            {f.proofUrl && <><br /><a href={f.proofUrl} target="_blank" rel="noreferrer">View payment screenshot</a></>}
+            {f.proofUrl && (
+              <>
+                <br />
+                <a href={f.proofUrl} target="_blank" rel="noreferrer" title="Click to enlarge">
+                  <img src={f.proofUrl} alt="Payment screenshot" style={{ maxWidth: 180, maxHeight: 180, borderRadius: 8, marginTop: 8, border: '1px solid var(--border)' }} />
+                </a>
+                <br /><a href={f.proofUrl} target="_blank" rel="noreferrer">View payment screenshot (full size)</a>
+              </>
+            )}
             {f.createdAt && <><br />{new Date(f.createdAt).toLocaleString()}</>}
           </div>
           {f.status === 'Pending' && (
@@ -389,7 +557,7 @@ function FundsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
           )}
         </div>
       ))}
-      {list.length === 0 && <p style={{ color: 'var(--muted)' }}>No fund requests.</p>}
+      {loaded && list.length === 0 && <p style={{ color: 'var(--muted)' }}>No fund requests.</p>}
     </div>
   );
 }
@@ -400,6 +568,7 @@ const EMPTY_METHOD: PaymentMethod = { id: '', label: '', accountName: '', accoun
 
 function MethodsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
   const [list, setList] = useState<PaymentMethod[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [editing, setEditing] = useState<PaymentMethod | null>(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -408,7 +577,7 @@ function MethodsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
     try {
       const d = await api<{ methods?: unknown[] }>('listMethods');
       setList(((d.methods ?? []) as Record<string, unknown>[]).map(normMethod));
-    } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load payment methods.'); }
+    } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load payment methods.'); } finally { setLoaded(true); }
   }, []);
   useEffect(() => { void load(); }, [load]);
 
@@ -441,7 +610,8 @@ function MethodsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
 
   return (
     <div className="panel">
-      <h3>Payments &amp; QR ({list.length})</h3>
+      <h3>Payments &amp; QR{loaded ? ` (${list.length})` : ''}</h3>
+      {!loaded && <p style={{ color: 'var(--muted)' }}>Loading payment methods…</p>}
       <button type="button" className="btn btn-primary" onClick={() => setEditing({ ...EMPTY_METHOD })}>+ Add payment method</button>
       {err && <p className="error">{err}</p>}
       {editing && (
@@ -489,7 +659,7 @@ function MethodsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
             </div>
           </div>
         ))}
-        {list.length === 0 && <p style={{ color: 'var(--muted)' }}>No payment methods yet.</p>}
+        {loaded && list.length === 0 && <p style={{ color: 'var(--muted)' }}>No payment methods yet.</p>}
       </div>
     </div>
   );
@@ -497,8 +667,14 @@ function MethodsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
 
 /* ================= Messages ================= */
 
-function MessagesTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
+function MessagesTab({ toast, seen, onMarkSeen }: {
+  toast: (m: string, e?: boolean) => void;
+  seen: Record<string, string>;
+  onMarkSeen: (convId: string, msgId: string) => void;
+}) {
   const [list, setList] = useState<Conversation[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [filter, setFilter] = useState<'all' | 'open' | 'closed'>('all');
   const [openId, setOpenId] = useState<string | null>(null);
   const [thread, setThread] = useState<Conversation | null>(null);
   const [reply, setReply] = useState('');
@@ -508,17 +684,43 @@ function MessagesTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
     try {
       const d = await api<{ conversations?: unknown[] }>('listConversations');
       setList(((d.conversations ?? []) as Record<string, unknown>[]).map(normConversation));
-    } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load conversations.'); }
+    } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load conversations.'); } finally { setLoaded(true); }
   }, []);
   useEffect(() => { void load(); }, [load]);
+  // Fresh inbox every 5s so new customer messages appear without a reload.
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      if (document.hidden) return;
+      void load();
+    }, 5000);
+    return () => window.clearInterval(t);
+  }, [load]);
+
+  const openThread = useCallback(async (id: string) => {
+    try {
+      const d = await api<{ conversation?: Record<string, unknown> }>('getConversation', { conversationId: id });
+      if (d.conversation) {
+        const c = normConversation(d.conversation);
+        setThread(c);
+        const last = c.messages[c.messages.length - 1];
+        if (last) onMarkSeen(id, last.id);
+      }
+    } catch (e) { toast(e instanceof Error ? e.message : 'Could not open thread.', true); }
+  }, [toast, onMarkSeen]);
 
   async function open(id: string) {
     setOpenId(id);
-    try {
-      const d = await api<{ conversation?: Record<string, unknown> }>('getConversation', { conversationId: id });
-      if (d.conversation) setThread(normConversation(d.conversation));
-    } catch (e) { toast(e instanceof Error ? e.message : 'Could not open thread.', true); }
+    await openThread(id);
   }
+  // Keep the open thread live: refresh every 3s so replies land promptly.
+  useEffect(() => {
+    if (!openId) return;
+    const t = window.setInterval(() => {
+      if (document.hidden) return;
+      void openThread(openId);
+    }, 3000);
+    return () => window.clearInterval(t);
+  }, [openId, openThread]);
 
   async function send(e: React.FormEvent) {
     e.preventDefault();
@@ -534,47 +736,66 @@ function MessagesTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
   async function setStatus(id: string, status: string) {
     try {
       await api('setConversationStatus', { conversationId: id, status });
-      toast(`Conversation ${status}.`);
+      toast(status === 'Closed' ? 'Conversation closed.' : 'Conversation reopened.');
       void load();
       if (thread) setThread({ ...thread, status });
     } catch (e) { toast(e instanceof Error ? e.message : 'Failed.', true); }
   }
 
+  const isUnread = (c: Conversation) =>
+    Boolean(c.lastMessage && c.lastMessage.sender === 'customer' && seen[c.id] !== c.lastMessage.id);
+  const unreadTotal = list.filter(isUnread).length;
+  const visible = list.filter((c) =>
+    filter === 'all' ? true : filter === 'open' ? c.status.toLowerCase() === 'open' : c.status.toLowerCase() === 'closed');
+
   return (
     <div className="panel">
-      <h3>Messages — inbox ({list.length})</h3>
+      <h3>Messages — inbox{loaded ? ` (${list.length})` : ''}{unreadTotal > 0 ? ` · ${unreadTotal} unread` : ''}</h3>
       {err && <p className="error">{err}</p>}
-      {list.map((c) => (
-        <div key={c.id} className="row-item">
-          <div className="top">
-            <b>{c.customerName || c.customerId || c.id}</b>
-            <span className={`status ${c.status.toLowerCase()}`}>{c.status}</span>
-          </div>
-          <div className="meta-line">
-            {c.messages.length ? c.messages[c.messages.length - 1].body.slice(0, 120) : 'No messages yet.'}
-          </div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-            <button type="button" className="btn btn-sm" onClick={() => open(c.id)}>{openId === c.id ? 'Refresh thread' : 'Open thread'}</button>
-            <button type="button" className="btn btn-sm" onClick={() => setStatus(c.id, c.status === 'open' ? 'closed' : 'open')}>
-              {c.status === 'open' ? 'Close' : 'Reopen'}
-            </button>
-          </div>
-          {openId === c.id && thread && (
-            <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
-              {thread.messages.map((m) => (
-                <div key={m.id} className="meta-line" style={{ marginBottom: 6 }}>
-                  <b>{m.sender === 'customer' ? (thread.customerName || 'Customer') : (m.senderName || 'Staff')}:</b> {m.body}
-                </div>
-              ))}
-              <form onSubmit={send} style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                <input className="input" value={reply} onChange={(e) => setReply(e.target.value)} placeholder="Reply…" />
-                <button type="submit" className="btn btn-primary">Send</button>
-              </form>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+        {(['all', 'open', 'closed'] as const).map((f) => (
+          <button key={f} type="button" className={`btn btn-sm${filter === f ? ' btn-primary' : ''}`} onClick={() => setFilter(f)}>
+            {f === 'all' ? 'All Chats' : f === 'open' ? 'Open Chats' : 'Closed Chats'}
+          </button>
+        ))}
+      </div>
+      {!loaded && <p style={{ color: 'var(--muted)' }}>Loading conversations…</p>}
+      {visible.map((c) => {
+        const unread = isUnread(c);
+        const preview = c.lastMessage?.body
+          ?? (c.messages.length ? c.messages[c.messages.length - 1].body : '');
+        return (
+          <div key={c.id} className="row-item">
+            <div className="top">
+              <b>{unread ? '● ' : ''}{c.customerName || c.customerId || c.id}</b>
+              <span className={`status ${c.status.toLowerCase()}`}>{c.status}</span>
             </div>
-          )}
-        </div>
-      ))}
-      {list.length === 0 && <p style={{ color: 'var(--muted)' }}>No conversations yet.</p>}
+            <div className="meta-line" style={unread ? { fontWeight: 700, color: 'var(--text)' } : undefined}>
+              {preview ? preview.slice(0, 120) : 'No messages yet.'}
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+              <button type="button" className="btn btn-sm" onClick={() => open(c.id)}>{openId === c.id ? 'Refresh thread' : 'Open thread'}</button>
+              <button type="button" className="btn btn-sm" onClick={() => setStatus(c.id, c.status.toLowerCase() === 'open' ? 'Closed' : 'Open')}>
+                {c.status.toLowerCase() === 'open' ? 'Close' : 'Reopen'}
+              </button>
+            </div>
+            {openId === c.id && thread && (
+              <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+                {thread.messages.map((m) => (
+                  <div key={m.id} className="meta-line" style={{ marginBottom: 6 }}>
+                    <b>{m.sender === 'customer' ? (thread.customerName || 'Customer') : (m.senderName || 'Staff')}:</b> {m.body}
+                  </div>
+                ))}
+                <form onSubmit={send} style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <input className="input" value={reply} onChange={(e) => setReply(e.target.value)} placeholder="Reply…" />
+                  <button type="submit" className="btn btn-primary">Send</button>
+                </form>
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {loaded && visible.length === 0 && <p style={{ color: 'var(--muted)' }}>{list.length === 0 ? 'No conversations yet.' : `No ${filter} chats.`}</p>}
     </div>
   );
 }
@@ -743,6 +964,7 @@ function ReferralsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
 
 function WithdrawalsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
   const [list, setList] = useState<Withdrawal[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [names, setNames] = useState<Record<string, string>>({});
   const [err, setErr] = useState('');
 
@@ -758,7 +980,7 @@ function WithdrawalsTab({ toast }: { toast: (m: string, e?: boolean) => void }) 
         });
         setNames(map);
       } catch { /* names stay blank */ }
-    } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load withdrawals.'); }
+    } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load withdrawals.'); } finally { setLoaded(true); }
   }, []);
   useEffect(() => { void load(); }, [load]);
 
@@ -772,7 +994,8 @@ function WithdrawalsTab({ toast }: { toast: (m: string, e?: boolean) => void }) 
 
   return (
     <div className="panel">
-      <h3>Withdrawals ({list.length})</h3>
+      <h3>Withdrawals{loaded ? ` (${list.length})` : ''}</h3>
+      {!loaded && <p style={{ color: 'var(--muted)' }}>Loading withdrawals…</p>}
       <p className="hint">Approving only marks the request approved — pay the user manually outside the system. Rejecting refunds the deducted balance in full.</p>
       {err && <p className="error">{err}</p>}
       {list.map((w) => (
@@ -793,7 +1016,7 @@ function WithdrawalsTab({ toast }: { toast: (m: string, e?: boolean) => void }) 
           )}
         </div>
       ))}
-      {list.length === 0 && <p style={{ color: 'var(--muted)' }}>No withdrawal requests.</p>}
+      {loaded && list.length === 0 && <p style={{ color: 'var(--muted)' }}>No withdrawal requests.</p>}
     </div>
   );
 }
@@ -802,6 +1025,7 @@ function WithdrawalsTab({ toast }: { toast: (m: string, e?: boolean) => void }) 
 
 function TeamTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
   const [users, setUsers] = useState<Profile[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState('');
   const [adjust, setAdjust] = useState<{ id: string; amountRs: string } | null>(null);
 
@@ -810,7 +1034,7 @@ function TeamTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
       const d = await api<{ users?: unknown[]; profiles?: unknown[] }>('listUsers');
       const raw = (d.users ?? d.profiles ?? []) as Record<string, unknown>[];
       setUsers(raw.map(normProfile));
-    } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load users.'); }
+    } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load users.'); } finally { setLoaded(true); }
   }, []);
   useEffect(() => { void load(); }, [load]);
 
@@ -846,7 +1070,8 @@ function TeamTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
 
   return (
     <div className="panel">
-      <h3>Team &amp; Users ({users.length})</h3>
+      <h3>Team &amp; Users{loaded ? ` (${users.length})` : ''}</h3>
+      {!loaded && <p style={{ color: 'var(--muted)' }}>Loading users…</p>}
       {err && <p className="error">{err}</p>}
       {users.map((u) => (
         <div key={u.id} className="row-item">
@@ -881,7 +1106,7 @@ function TeamTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
           )}
         </div>
       ))}
-      {users.length === 0 && <p style={{ color: 'var(--muted)' }}>No users found.</p>}
+      {loaded && users.length === 0 && <p style={{ color: 'var(--muted)' }}>No users found.</p>}
     </div>
   );
 }

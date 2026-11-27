@@ -200,9 +200,10 @@ export interface Conversation {
   id: string;
   customerName?: string;
   customerId?: string;
-  status: string; // open | closed
+  status: string; // Open | Closed (backend spelling)
   messages: ChatMessage[];
   updatedAt?: string;
+  lastMessage?: { id: string; body: string; sender: string; createdAt: string };
 }
 
 // ---------- Normalisers (accept several plausible backend field spellings) ----------
@@ -361,12 +362,19 @@ export function normFund(r: Record<string, unknown>): FundRequest {
 
 export function normConversation(r: Record<string, unknown>): Conversation {
   const msgs = (Array.isArray(r.messages) ? r.messages : []) as Record<string, unknown>[];
+  const lm = (r.last_message ?? r.lastMessage) as Record<string, unknown> | null | undefined;
   return {
     id: String(pick(r, ['id', 'conversation_id'], '')),
     customerName: String(pick(r, ['customer_name', 'customerName'], '')),
     customerId: String(pick(r, ['customer_id', 'customerId'], '')),
-    status: String(pick(r, ['status'], 'open')),
+    status: String(pick(r, ['status'], 'Open')),
     updatedAt: String(pick(r, ['updated_at', 'updatedAt'], '')),
+    lastMessage: lm && typeof lm === 'object' ? {
+      id: String(pick(lm, ['id'], '')),
+      body: String(pick(lm, ['body', 'message', 'text'], '')),
+      sender: String(pick(lm, ['sender_role', 'sender'], 'customer')),
+      createdAt: String(pick(lm, ['created_at', 'createdAt'], '')),
+    } : undefined,
     messages: msgs.map((m) => ({
       id: String(pick(m, ['id'], Math.random().toString(36).slice(2))),
       sender: String(pick(m, ['sender', 'sender_role', 'role'], 'customer')),
