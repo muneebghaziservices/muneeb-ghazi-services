@@ -5,7 +5,7 @@ import {
   paisaToRs,
 } from './api';
 import type {
-  Conversation, FundRequest, Order, PaymentMethod, Profile, ReferralRow,
+  AdminStats, Conversation, FundRequest, Order, PaymentMethod, Profile, ReferralRow,
   ReferrerTotal, ReferralSettings, Service, Withdrawal,
 } from './api';
 
@@ -43,6 +43,7 @@ export default function AdminPanel({ profile, toast, onBack }: {
         {' · '}
         <button type="button" className="btn btn-ghost btn-sm" onClick={onBack}>← Back to shop</button>
       </p>
+      {profile.role === 'admin' && <DashboardStats />}
       <div className="tabs">
         {tabs.map((t) => (
           <button key={t.id} type="button" className={`tab${tab === t.id ? ' active' : ''}`} onClick={() => setTab(t.id)}>
@@ -578,10 +579,69 @@ function MessagesTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
   );
 }
 
+/* ================= Dashboard stats ================= */
+// Admin-only overview at the top of the panel. Sales exclude cancelled
+// orders (those auto-refund). Periods follow Asia/Karachi (server-side).
+
+function DashboardStats() {
+  const [stats, setStats] = useState<AdminStats | null>(null);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    let alive = true;
+    api<AdminStats>('getAdminStats')
+      .then((s) => { if (alive) setStats(s); })
+      .catch((e) => { if (alive) setErr(e instanceof Error ? e.message : 'Could not load stats.'); });
+    return () => { alive = false; };
+  }, []);
+  if (err) return <p className="error">{err}</p>;
+  if (!stats) return <p style={{ color: 'var(--muted)' }}>Loading stats…</p>;
+  const rows = [
+    { label: 'Today', b: stats.periods.today },
+    { label: 'This month', b: stats.periods.month },
+    { label: 'This year', b: stats.periods.year },
+    { label: 'All time', b: stats.periods.allTime },
+  ];
+  const card = { flex: '1 1 0', minWidth: 110, border: '1px solid var(--border)', borderRadius: 10, padding: '12px 14px' } as const;
+  const num = { fontSize: 22, fontWeight: 700 } as const;
+  const lab = { color: 'var(--muted)', fontSize: 13, marginTop: 2 } as const;
+  return (
+    <div className="panel" style={{ marginBottom: 16 }}>
+      <h3 style={{ marginTop: 0 }}>Dashboard</h3>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <div style={card}><div style={num}>{stats.totalUsers}</div><div style={lab}>Total Users</div></div>
+        <div style={card}><div style={num}>{fmtRs(stats.totalSalesPaisa)}</div><div style={lab}>Total Sales</div></div>
+        <div style={card}><div style={num}>{stats.totalOrders}</div><div style={lab}>Total Orders</div></div>
+      </div>
+      <table style={{ width: '100%', marginTop: 14, borderCollapse: 'collapse', fontSize: 14 }}>
+        <thead>
+          <tr style={{ textAlign: 'left', color: 'var(--muted)' }}>
+            <th style={{ padding: '6px 8px 6px 0' }}>Period</th>
+            <th style={{ padding: 6 }}>Sales</th>
+            <th style={{ padding: 6 }}>Orders</th>
+            <th style={{ padding: 6 }}>New users</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.label} style={{ borderTop: '1px solid var(--border)' }}>
+              <td style={{ padding: '6px 8px 6px 0' }}>{r.label}</td>
+              <td style={{ padding: 6 }}>{fmtRs(r.b.salesPaisa)}</td>
+              <td style={{ padding: 6 }}>{r.b.orders}</td>
+              <td style={{ padding: 6 }}>{r.b.newUsers}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="hint">Sales exclude cancelled orders (those auto-refund). Periods follow Pakistan time.</p>
+    </div>
+  );
+}
+
 /* ================= Referrals ================= */
 
 function ReferralsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
   const [settings, setSettings] = useState<ReferralSettings>({ commissionPercent: 5, minWithdrawalRs: 500 });
+  const [loaded, setLoaded] = useState(false);
   const [rows, setRows] = useState<ReferralRow[]>([]);
   const [totals, setTotals] = useState<ReferrerTotal[]>([]);
   const [err, setErr] = useState('');
@@ -614,7 +674,7 @@ function ReferralsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
         totalEarnedPaisa: Number(x.totalEarnedPaisa ?? 0),
         count: Number(x.count ?? 0),
       })));
-    } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load referrals.'); }
+    } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load referrals.'); } finally { setLoaded(true); }
   }, []);
   useEffect(() => { void load(); }, [load]);
 
@@ -634,6 +694,10 @@ function ReferralsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
     <div className="panel">
       <h3>Referrals</h3>
       {err && <p className="error">{err}</p>}
+      {!loaded ? (
+        <p style={{ color: 'var(--muted)' }}>Loading referral settings…</p>
+      ) : (
+        <>
       <form onSubmit={save}>
         <div className="inline-form">
           <label className="field"><span>Commission percent (%)</span>
@@ -669,6 +733,8 @@ function ReferralsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
           </div>
         </div>
       ))}
+        </>
+      )}
     </div>
   );
 }

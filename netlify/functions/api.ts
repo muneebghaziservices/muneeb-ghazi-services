@@ -1167,6 +1167,69 @@ async function listReferrals(_p: Params, token: string | null) {
   return { referrals, totals: [...totalsMap.values()], earnings };
 }
 
+// ------------------------------------------------------------- admin stats
+// Dashboard totals for the Admin Panel (admin only). Period boundaries use
+// the owner's timezone (Asia/Karachi, UTC+5, no DST). Sales exclude
+// cancelled orders (those auto-refund); order counts include every order
+// placed. Fetches up to 5000 order rows — fine at this shop's scale.
+
+const PKT_OFFSET_MS = 5 * 60 * 60 * 1000;
+
+function pktDayStartMs(nowMs: number): number {
+  const pkt = new Date(nowMs + PKT_OFFSET_MS);
+  return Date.UTC(pkt.getUTCFullYear(), pkt.getUTCMonth(), pkt.getUTCDate()) - PKT_OFFSET_MS;
+}
+
+async function getAdminStats(_p: Params, token: string | null) {
+  const me = await requireAuth(token);
+  requireAdmin(me);
+  const [profilesRes, ordersRes] = await Promise.all([
+    db().from('profiles').select('id, created_at').order('created_at', { ascending: true }),
+    db().from('orders').select('amount_paisa, status, created_at').order('created_at', { ascending: false }).limit(5000),
+  ]);
+  if (profilesRes.error) throw new Error(profilesRes.error.message);
+  if (ordersRes.error) throw new Error(ordersRes.error.message);
+  const profiles = (profilesRes.data ?? []) as { id: string; created_at: string }[];
+  const orders = (ordersRes.data ?? []) as { amount_paisa: number; status: string; created_at: string }[];
+
+  const nowMs = Date.now();
+  const pktNow = new Date(nowMs + PKT_OFFSET_MS);
+  const dayStart = pktDayStartMs(nowMs);
+  const monthStart = Date.UTC(pktNow.getUTCFullYear(), pktNow.getUTCMonth(), 1) - PKT_OFFSET_MS;
+  const yearStart = Date.UTC(pktNow.getUTCFullYear(), 0, 1) - PKT_OFFSET_MS;
+
+  type Bucket = { salesPaisa: number; orders: number; newUsers: number };
+  const blank = (): Bucket => ({ salesPaisa: 0, orders: 0, newUsers: 0 });
+  const today = blank();
+  const month = blank();
+  const year = blank();
+  const allTime = blank();
+
+  for (const o of orders) {
+    const t = Date.parse(o.created_at);
+    const sale = o.status !== 'Cancelled' ? Number(o.amount_paisa || 0) : 0;
+    allTime.orders += 1;
+    allTime.salesPaisa += sale;
+    if (t >= dayStart) { today.orders += 1; today.salesPaisa += sale; }
+    if (t >= monthStart) { month.orders += 1; month.salesPaisa += sale; }
+    if (t >= yearStart) { year.orders += 1; year.salesPaisa += sale; }
+  }
+  for (const u of profiles) {
+    const t = Date.parse(u.created_at);
+    allTime.newUsers += 1;
+    if (t >= dayStart) today.newUsers += 1;
+    if (t >= monthStart) month.newUsers += 1;
+    if (t >= yearStart) year.newUsers += 1;
+  }
+
+  return {
+    totalUsers: profiles.length,
+    totalOrders: orders.length,
+    totalSalesPaisa: allTime.salesPaisa,
+    periods: { today, month, year, allTime },
+  };
+}
+
 // --------------------------------------------------------------- withdrawals
 
 async function requestWithdrawal(p: Params, token: string | null) {
@@ -1253,6 +1316,7 @@ const ACTIONS: Record<string, (p: Params, token: string | null) => Promise<unkno
   saveReferralSettings,
   getMyReferral,
   listReferrals,
+  getAdminStats,
   requestWithdrawal,
   listWithdrawals,
   resolveWithdrawal,

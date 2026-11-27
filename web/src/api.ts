@@ -128,6 +128,24 @@ export interface MyReferral {
   withdrawals: Withdrawal[];
 }
 
+export interface StatsBucket {
+  salesPaisa: number;
+  orders: number;
+  newUsers: number;
+}
+
+export interface AdminStats {
+  totalUsers: number;
+  totalOrders: number;
+  totalSalesPaisa: number;
+  periods: {
+    today: StatsBucket;
+    month: StatsBucket;
+    year: StatsBucket;
+    allTime: StatsBucket;
+  };
+}
+
 export interface ReferralRow {
   referredId: string;
   referredName: string;
