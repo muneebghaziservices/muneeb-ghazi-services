@@ -8,7 +8,8 @@
   functions = "netlify/functions"
 
 [build.environment]
-  NODE_VERSION = "20"
+  # Node 22+: @supabase/supabase-js needs a native WebSocket, which Node 20 lacks.
+  NODE_VERSION = "22"
 
 # SPA fallback: everything that is not a file or a function goes to index.html.
 # The /.netlify/* exclusion keeps function + internal routes working.
@@ -26,7 +27,3 @@
 # so the API function can resolve @supabase/supabase-js at build time.
 [[plugins]]
   package = "@netlify/plugin-functions-install-core"
-
-
-
-
