@@ -1043,7 +1043,17 @@ function ChatPanel({ profile, toast, onClose, onNeedAuth, onOpenAdmin }: {
           const d = await api<{ conversation?: Record<string, unknown> }>('getConversation', {});
           if (d.conversation) {
             const c = normConversation(d.conversation);
-            setConv(c);
+            // Keep any still-unsent optimistic message across background
+            // refreshes (a poll landing mid-send must not eat it). A tmp
+            // message whose text already came back from the server is
+            // dropped instead of duplicated.
+            setConv((prev) => {
+              if (!prev) return c;
+              const keepTmp = prev.messages.filter((m) =>
+                m.id.startsWith('tmp-') &&
+                !c.messages.some((s) => s.sender === 'customer' && s.body === m.body));
+              return keepTmp.length ? { ...c, messages: [...c.messages, ...keepTmp] } : c;
+            });
             return c;
           }
           return null;
@@ -1085,10 +1095,18 @@ function ChatPanel({ profile, toast, onClose, onNeedAuth, onOpenAdmin }: {
       // "Missing field: conversationId".
       const c = conv?.id ? conv : await load();
       if (!c?.id) throw new Error('Chat could not be loaded. Please try again.');
-      const d = await api<{ conversation?: Record<string, unknown> }>('sendMessage', {
+      const d = await api<{ message?: Record<string, unknown>; conversation?: Record<string, unknown> }>('sendMessage', {
         conversationId: c.id, body: text,
       });
-      if (d.conversation) setConv(normConversation(d.conversation));
+      // The server now returns just the saved message (no full-thread
+      // refetch) — swap it in for the optimistic copy. Older responses
+      // that still carry the whole conversation keep working too.
+      if (d.message) {
+        const real = normConversation({ messages: [d.message] }).messages[0];
+        setConv((prev) => prev ? { ...prev, messages: prev.messages.map((m) => (m.id === tmpId ? real : m)) } : prev);
+      } else if (d.conversation && Array.isArray(d.conversation.messages)) {
+        setConv(normConversation(d.conversation));
+      }
       setErr('');
     } catch (e2) {
       // Roll the optimistic message back so a failed send never looks sent.
@@ -1116,7 +1134,8 @@ function ChatPanel({ profile, toast, onClose, onNeedAuth, onOpenAdmin }: {
       ) : (
         <>
           <div className="chat-body" ref={bodyRef}>
-            {conv?.messages.length === 0 && <p style={{ color: 'var(--muted)', fontSize: 13.5 }}>Hi {profile.name}! Ask us anything about your orders or payments. 👋</p>}
+            {loading && !conv && <p style={{ color: 'var(--muted)', fontSize: 13.5 }}>Opening your chat…</p>}
+            {conv?.messages.length === 0 && !loading && <p style={{ color: 'var(--muted)', fontSize: 13.5 }}>Hi {profile.name}! Ask us anything about your orders or payments. 👋</p>}
             {conv?.messages.map((m) => (
               <div key={m.id} className={`msg ${isMine(m) ? 'me' : 'them'}`}>
                 {m.body}
@@ -1127,7 +1146,11 @@ function ChatPanel({ profile, toast, onClose, onNeedAuth, onOpenAdmin }: {
           </div>
           <form className="chat-input" onSubmit={send}>
             <input className="input" value={body} onChange={(e) => setBody(e.target.value)} placeholder="Type a message…" />
-            <button type="submit" className="btn btn-primary" disabled={busy || loading}>Send</button>
+            {/* SPEED: Send is never disabled by the thread loading — the
+                message shows instantly and the send waits for the thread
+                id in the background. Disabling it until load finished
+                was a real "chat is slow" cause. */}
+            <button type="submit" className="btn btn-primary" disabled={busy}>Send</button>
           </form>
         </>
       )}

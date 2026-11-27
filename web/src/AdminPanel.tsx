@@ -66,7 +66,20 @@ type AlertConversation = {
   last_message?: { id: string; body: string; sender_role: string; created_at: string } | null;
 };
 
-type AdminAlerts = { pendingFunds: number; pendingOrders: number; conversations: AlertConversation[] };
+type PendingFundAlert = {
+  id: string;
+  customer_name?: string;
+  sender_name?: string;
+  amount_paisa: number;
+  created_at?: string;
+};
+
+type AdminAlerts = {
+  pendingFunds: number;
+  pendingOrders: number;
+  conversations: AlertConversation[];
+  pendingFundsList?: PendingFundAlert[];
+};
 
 export default function AdminPanel({ profile, toast, onBack }: {
   profile: Profile; toast: (m: string, e?: boolean) => void; onBack: () => void;
@@ -103,6 +116,7 @@ export default function AdminPanel({ profile, toast, onBack }: {
   ).length ?? 0;
   const pendingFunds = alerts?.pendingFunds ?? 0;
   const pendingOrders = alerts?.pendingOrders ?? 0;
+  const pendingFundsList = alerts?.pendingFundsList ?? [];
 
   // New arrivals while the panel is open: red toast + sound + banner.
   // The first load only seeds the counts (existing items are not "new").
@@ -111,6 +125,20 @@ export default function AdminPanel({ profile, toast, onBack }: {
     if (!alertsInit.current) {
       alertsInit.current = true;
       prevCounts.current = { unread: unreadCount, pendingFunds, pendingOrders };
+      // PROBLEM 1 (2026-11-28): the old code SILENTLY seeded the counts on
+      // the first load, so a fund request that arrived while the panel was
+      // CLOSED never made a sound — only a dismissible banner showed, and
+      // once dismissed the pending request was invisible except for a
+      // small tab badge. Now the first load ALSO notifies (toast + beep)
+      // when anything is already waiting; the persistent strip below
+      // names every pending fund request until it is resolved.
+      if (pendingFunds > 0) {
+        toast(`${pendingFunds} fund request${pendingFunds === 1 ? '' : 's'} waiting — check the Funds tab.`, true);
+        beep();
+      } else if (unreadCount > 0) {
+        toast(`${unreadCount} unread message${unreadCount === 1 ? '' : 's'} — check the Messages inbox.`, true);
+        beep();
+      }
       return;
     }
     const prev = prevCounts.current;
@@ -171,7 +199,6 @@ export default function AdminPanel({ profile, toast, onBack }: {
 
   const alertParts = [
     unreadCount > 0 ? `${unreadCount} unread message${unreadCount === 1 ? '' : 's'}` : null,
-    pendingFunds > 0 ? `${pendingFunds} pending fund request${pendingFunds === 1 ? '' : 's'}` : null,
     pendingOrders > 0 ? `${pendingOrders} pending order${pendingOrders === 1 ? '' : 's'}` : null,
   ].filter(Boolean);
 
@@ -184,12 +211,35 @@ export default function AdminPanel({ profile, toast, onBack }: {
         <button type="button" className="btn btn-ghost btn-sm" onClick={onBack}>← Back to shop</button>
       </p>
       {profile.role === 'admin' && <DashboardStats />}
+      {/* PROBLEM 1 (2026-11-28): PERSISTENT fund alert — it cannot be
+          dismissed and it names WHO requested funds and how much. It stays
+          on screen until every pending fund request is resolved, so a
+          request can never be missed the way a dismissed banner could be.
+          The alerts poll (every 5s, any tab) keeps it live. */}
+      {profile.role === 'admin' && pendingFunds > 0 && (
+        <div role="alert" style={{ background: '#3a0d0d', border: '1px solid #ef4444', color: '#fecaca', borderRadius: 10, padding: '10px 12px', marginBottom: 12 }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <b>💰 {pendingFunds} fund request{pendingFunds === 1 ? '' : 's'} waiting:</b>
+            <button type="button" className="btn btn-sm" onClick={() => setTab('funds')}>Open Funds</button>
+          </div>
+          <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {pendingFundsList.map((f) => (
+              <span key={f.id}>
+                • <b style={{ color: '#fff' }}>{f.customer_name || f.sender_name || 'Customer'}</b>
+                {' '}requested <b style={{ color: '#fff' }}>{fmtRs(f.amount_paisa)}</b>
+                {f.sender_name && f.customer_name ? ` (sender: ${f.sender_name})` : ''}
+                {f.created_at ? ` · ${new Date(f.created_at).toLocaleString()}` : ''}
+              </span>
+            ))}
+            {pendingFundsList.length === 0 && <span>Open the Funds tab to review.</span>}
+          </div>
+        </div>
+      )}
       {profile.role === 'admin' && !bannerDismissed && alertParts.length > 0 && (
         <div role="alert" style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', background: '#3a0d0d', border: '1px solid #ef4444', color: '#fecaca', borderRadius: 10, padding: '10px 12px', marginBottom: 12 }}>
           <b>🔔 New:</b>
           <span style={{ flex: '1 1 auto' }}>{alertParts.join(' · ')}</span>
           {unreadCount > 0 && <button type="button" className="btn btn-sm" onClick={() => setTab('messages')}>Open Messages</button>}
-          {pendingFunds > 0 && <button type="button" className="btn btn-sm" onClick={() => setTab('funds')}>Open Funds</button>}
           <button type="button" className="btn btn-sm" onClick={() => setBannerDismissed(true)} aria-label="Dismiss">✕</button>
         </div>
       )}
@@ -299,6 +349,16 @@ function ServicesTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
     if (!editing.title.trim()) { setErr('Title is required.'); return; }
     const category = categoryIsNew ? newCategory.trim() : editing.category.trim();
     if (!category) { setErr('Category is required.'); return; }
+    // OPTIMISTIC: the form closes and the row updates instantly; the
+    // server confirms in the background. On failure the form reopens.
+    const saved = { ...editing, category, title: editing.title.trim() };
+    const isNew = !editing.id;
+    const prevList = list;
+    setList((l) => (isNew ? [{ ...saved, id: `tmp-${Date.now()}` }, ...l] : l.map((s) => (s.id === saved.id ? saved : s))));
+    setEditing(null);
+    setCategoryIsNew(false);
+    setNewCategory('');
+    toast('Service saved.');
     setBusy(true); setErr('');
     try {
       if (categoryIsNew) {
@@ -306,7 +366,7 @@ function ServicesTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
         try { await api('addSection', { platform: editing.platform, category }); } catch { /* already exists — fine */ }
         void loadSections();
       }
-      await api('saveService', {
+      const d = await api<{ service?: Record<string, unknown> }>('saveService', {
         service: {
           ...(editing.id ? { id: editing.id } : {}),
           platform: editing.platform, category,
@@ -315,18 +375,25 @@ function ServicesTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
           min_qty: editing.minQty, active: editing.active,
         },
       });
-      toast('Service saved.');
-      setEditing(null);
-      setCategoryIsNew(false);
-      setNewCategory('');
-      void load();
-    } catch (e2) { setErr(e2 instanceof Error ? e2.message : 'Save failed.'); } finally { setBusy(false); }
+      if (d.service) {
+        const row = normService(d.service);
+        setList((l) => (isNew ? [row, ...l.filter((s) => !s.id.startsWith('tmp-'))] : l.map((s) => (s.id === row.id ? row : s))));
+      } else void load();
+    } catch (e2) {
+      setList(prevList);
+      setEditing(saved);
+      setErr(e2 instanceof Error ? e2.message : 'Save failed.');
+    } finally { setBusy(false); }
   }
 
   async function remove(id: string) {
     if (!window.confirm('Delete this service?')) return;
-    try { await api('deleteService', { id }); toast('Service deleted.'); void load(); }
-    catch (e) { toast(e instanceof Error ? e.message : 'Delete failed.', true); }
+    // OPTIMISTIC: the row disappears instantly; rollback only on failure.
+    const prev = list;
+    setList((l) => l.filter((s) => s.id !== id));
+    toast('Service deleted.');
+    try { await api('deleteService', { id }); }
+    catch (e) { setList(prev); toast(e instanceof Error ? e.message : 'Delete failed.', true); }
   }
 
   return (
@@ -619,11 +686,19 @@ function FundsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
   }, [load]);
 
   async function resolve(fundId: string, approve: boolean) {
+    // OPTIMISTIC: the row flips to Approved/Rejected instantly; the
+    // balance credit happens on the server in the background.
+    const prev = list;
+    const status = approve ? 'Approved' : 'Rejected';
+    setList((l) => l.map((f) => (f.id === fundId ? { ...f, status } : f)));
+    toast(approve ? 'Fund request approved — balance credited.' : 'Fund request rejected.');
     try {
       await api('resolveFund', { fundId, approve });
-      toast(approve ? 'Fund request approved — balance credited.' : 'Fund request rejected.');
       void load();
-    } catch (e) { toast(e instanceof Error ? e.message : 'Failed.', true); }
+    } catch (e) {
+      setList(prev);
+      toast(e instanceof Error ? e.message : 'Failed.', true);
+    }
   }
 
   return (
@@ -688,9 +763,17 @@ function MethodsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
     e.preventDefault();
     if (!editing) return;
     if (!editing.label.trim()) { setErr('Label is required.'); return; }
+    // OPTIMISTIC: the form closes and the row updates instantly; the
+    // server confirms in the background. On failure the form reopens.
+    const saved = { ...editing, label: editing.label.trim() };
+    const isNew = !editing.id;
+    const prevList = list;
+    setList((l) => (isNew ? [{ ...saved, id: `tmp-${Date.now()}` }, ...l] : l.map((m) => (m.id === saved.id ? saved : m))));
+    setEditing(null);
+    toast('Payment method saved.');
     setBusy(true); setErr('');
     try {
-      await api('saveMethod', {
+      const d = await api<{ paymentMethod?: Record<string, unknown> }>('saveMethod', {
         method: {
           ...(editing.id ? { id: editing.id } : {}),
           label: editing.label.trim(), account_name: editing.accountName,
@@ -699,16 +782,25 @@ function MethodsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
           active: editing.active,
         },
       });
-      toast('Payment method saved.');
-      setEditing(null);
-      void load();
-    } catch (e2) { setErr(e2 instanceof Error ? e2.message : 'Save failed.'); } finally { setBusy(false); }
+      if (d.paymentMethod) {
+        const row = normMethod(d.paymentMethod);
+        setList((l) => (isNew ? [row, ...l.filter((m) => !m.id.startsWith('tmp-'))] : l.map((m) => (m.id === row.id ? row : m))));
+      } else void load();
+    } catch (e2) {
+      setList(prevList);
+      setEditing(saved);
+      setErr(e2 instanceof Error ? e2.message : 'Save failed.');
+    } finally { setBusy(false); }
   }
 
   async function remove(id: string) {
     if (!window.confirm('Delete this payment method?')) return;
-    try { await api('deleteMethod', { id }); toast('Method deleted.'); void load(); }
-    catch (e) { toast(e instanceof Error ? e.message : 'Delete failed.', true); }
+    // OPTIMISTIC: the row disappears instantly; rollback only on failure.
+    const prev = list;
+    setList((l) => l.filter((m) => m.id !== id));
+    toast('Method deleted.');
+    try { await api('deleteMethod', { id }); }
+    catch (e) { setList(prev); toast(e instanceof Error ? e.message : 'Delete failed.', true); }
   }
 
   return (
@@ -804,15 +896,35 @@ function MessagesTab({ toast, seen, onMarkSeen }: {
       const d = await api<{ conversation?: Record<string, unknown> }>('getConversation', { conversationId: id });
       if (d.conversation) {
         const c = normConversation(d.conversation);
-        setThread(c);
+        // Keep a still-unsent optimistic reply across background
+        // refreshes; drop it if its text already came back from the server.
+        setThread((prev) => {
+          if (!prev || prev.id !== id) return c;
+          const keepTmp = prev.messages.filter((m) =>
+            m.id.startsWith('tmp-') &&
+            !c.messages.some((s) => s.sender === 'staff' && s.body === m.body));
+          return keepTmp.length ? { ...c, messages: [...c.messages, ...keepTmp] } : c;
+        });
         const last = c.messages[c.messages.length - 1];
         if (last) onMarkSeen(id, last.id);
       }
     } catch (e) { toast(e instanceof Error ? e.message : 'Could not open thread.', true); }
   }, [toast, onMarkSeen]);
 
+  // SPEED: the thread opens INSTANTLY — the row expands with the cached
+  // preview and a loading line, and the messages fill in when the fetch
+  // returns (~1-2s). The old code showed nothing until the fetch finished.
   async function open(id: string) {
+    if (openId === id) { setOpenId(null); setThread(null); return; }
+    const cached = list.find((c) => c.id === id);
     setOpenId(id);
+    setThread((prev) => (prev && prev.id === id ? prev : {
+      id,
+      customerName: cached?.customerName ?? '',
+      customerId: cached?.customerId ?? '',
+      status: cached?.status ?? 'Open',
+      messages: [],
+    }));
     await openThread(id);
   }
   // Keep the open thread live: refresh every 3s so replies land promptly.
@@ -828,21 +940,46 @@ function MessagesTab({ toast, seen, onMarkSeen }: {
   async function send(e: React.FormEvent) {
     e.preventDefault();
     if (!openId || !reply.trim()) return;
+    const text = reply.trim();
+    const tmpId = `tmp-${Date.now()}`;
+    // OPTIMISTIC: the reply shows instantly; the server confirms in the
+    // background and the tmp copy is swapped for the saved message.
+    setThread((prev) => (prev ? {
+      ...prev,
+      messages: [...prev.messages, { id: tmpId, sender: 'staff', senderName: '', body: text, createdAt: new Date().toISOString() }],
+    } : prev));
+    setReply('');
     try {
-      const d = await api<{ conversation?: Record<string, unknown> }>('sendMessage', { conversationId: openId, body: reply.trim() });
-      if (d.conversation) setThread(normConversation(d.conversation));
-      setReply('');
+      const d = await api<{ message?: Record<string, unknown>; conversation?: Record<string, unknown> }>('sendMessage', { conversationId: openId, body: text });
+      if (d.message) {
+        const real = normConversation({ messages: [d.message] }).messages[0];
+        setThread((prev) => (prev ? { ...prev, messages: prev.messages.map((m) => (m.id === tmpId ? real : m)) } : prev));
+      } else if (d.conversation && Array.isArray(d.conversation.messages)) {
+        setThread(normConversation(d.conversation));
+      }
       void load();
-    } catch (e2) { toast(e2 instanceof Error ? e2.message : 'Reply failed.', true); }
+    } catch (e2) {
+      setThread((prev) => (prev ? { ...prev, messages: prev.messages.filter((m) => m.id !== tmpId) } : prev));
+      toast(e2 instanceof Error ? e2.message : 'Reply failed.', true);
+    }
   }
 
   async function setStatus(id: string, status: string) {
+    // OPTIMISTIC: the badge + button flip instantly; the server syncs
+    // behind it and only a failure rolls the row back.
+    const prev = list;
+    const prevThread = thread;
+    setList((l) => l.map((c) => (c.id === id ? { ...c, status } : c)));
+    if (thread && thread.id === id) setThread({ ...thread, status });
+    toast(status === 'Closed' ? 'Conversation closed.' : 'Conversation reopened.');
     try {
       await api('setConversationStatus', { conversationId: id, status });
-      toast(status === 'Closed' ? 'Conversation closed.' : 'Conversation reopened.');
       void load();
-      if (thread) setThread({ ...thread, status });
-    } catch (e) { toast(e instanceof Error ? e.message : 'Failed.', true); }
+    } catch (e) {
+      setList(prev);
+      if (prevThread) setThread(prevThread);
+      toast(e instanceof Error ? e.message : 'Failed.', true);
+    }
   }
 
   const isUnread = (c: Conversation) =>
@@ -877,13 +1014,14 @@ function MessagesTab({ toast, seen, onMarkSeen }: {
               {preview ? preview.slice(0, 120) : 'No messages yet.'}
             </div>
             <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-              <button type="button" className="btn btn-sm" onClick={() => open(c.id)}>{openId === c.id ? 'Refresh thread' : 'Open thread'}</button>
+              <button type="button" className="btn btn-sm" onClick={() => open(c.id)}>{openId === c.id ? 'Close thread' : 'Open thread'}</button>
               <button type="button" className="btn btn-sm" onClick={() => setStatus(c.id, c.status.toLowerCase() === 'open' ? 'Closed' : 'Open')}>
                 {c.status.toLowerCase() === 'open' ? 'Close' : 'Reopen'}
               </button>
             </div>
             {openId === c.id && thread && (
               <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+                {thread.messages.length === 0 && <p style={{ color: 'var(--muted)' }}>Loading messages…</p>}
                 {thread.messages.map((m) => (
                   <div key={m.id} className="meta-line" style={{ marginBottom: 6 }}>
                     <b>{m.sender === 'customer' ? (thread.customerName || 'Customer') : (m.senderName || 'Staff')}:</b> {m.body}
@@ -1004,14 +1142,17 @@ function ReferralsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
+    // OPTIMISTIC: the settings are already in local state — confirm
+    // instantly and sync in the background.
     setBusy(true); setErr('');
+    toast('Referral settings saved.');
+    setBusy(false);
     try {
       await api('saveReferralSettings', {
         commissionPercent: settings.commissionPercent,
         minWithdrawalRs: settings.minWithdrawalRs,
       });
-      toast('Referral settings saved.');
-    } catch (e2) { setErr(e2 instanceof Error ? e2.message : 'Save failed.'); } finally { setBusy(false); }
+    } catch (e2) { setErr(e2 instanceof Error ? e2.message : 'Save failed.'); }
   }
 
   return (
@@ -1088,11 +1229,18 @@ function WithdrawalsTab({ toast }: { toast: (m: string, e?: boolean) => void }) 
   useEffect(() => { void load(); }, [load]);
 
   async function resolve(id: string, approve: boolean) {
+    // OPTIMISTIC: the row flips instantly; the server syncs behind it.
+    const prev = list;
+    const status = approve ? 'Approved' : 'Rejected';
+    setList((l) => l.map((w) => (w.id === id ? { ...w, status } : w)));
+    toast(approve ? 'Withdrawal approved — pay the user manually (e.g. JazzCash / UBL).' : 'Withdrawal rejected — balance refunded.');
     try {
       await api('resolveWithdrawal', { withdrawalId: id, approve });
-      toast(approve ? 'Withdrawal approved — pay the user manually (e.g. JazzCash / UBL).' : 'Withdrawal rejected — balance refunded.');
       void load();
-    } catch (e) { toast(e instanceof Error ? e.message : 'Failed.', true); }
+    } catch (e) {
+      setList(prev);
+      toast(e instanceof Error ? e.message : 'Failed.', true);
+    }
   }
 
   return (
@@ -1142,26 +1290,38 @@ function TeamTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
   useEffect(() => { void load(); }, [load]);
 
   async function saveMember(u: Profile) {
+    // OPTIMISTIC: role/permission toggles already updated the row locally;
+    // confirm instantly and sync in the background, rolling back on error.
+    const prev = users;
+    toast(`${u.name} updated.`);
     try {
       await api('saveTeamMember', {
         profileId: u.id, role: u.role,
         permissions: u.permissions,
       });
-      toast(`${u.name} updated.`);
-      void load();
-    } catch (e) { toast(e instanceof Error ? e.message : 'Update failed.', true); }
+    } catch (e) {
+      setUsers(prev);
+      toast(e instanceof Error ? e.message : 'Update failed.', true);
+    }
   }
 
   async function doAdjust() {
     if (!adjust) return;
     const rs = Number(adjust.amountRs);
     if (!Number.isFinite(rs) || rs === 0) { toast('Enter a non-zero amount in Rs (negative to deduct).', true); return; }
+    // OPTIMISTIC: the balance in the row moves instantly.
+    const prev = users;
+    const delta = Math.round(rs * 100);
+    setUsers((l) => l.map((x) => (x.id === adjust.id ? { ...x, balancePaisa: x.balancePaisa + delta } : x)));
+    toast(`Balance adjusted by Rs ${rs}.`);
+    setAdjust(null);
     try {
-      await api('adjustBalance', { profileId: adjust.id, amountPaisa: Math.round(rs * 100) });
-      toast(`Balance adjusted by Rs ${rs}.`);
-      setAdjust(null);
+      await api('adjustBalance', { profileId: adjust.id, amountPaisa: delta });
       void load();
-    } catch (e) { toast(e instanceof Error ? e.message : 'Adjustment failed.', true); }
+    } catch (e) {
+      setUsers(prev);
+      toast(e instanceof Error ? e.message : 'Adjustment failed.', true);
+    }
   }
 
   function setPerm(u: Profile, key: keyof Profile['permissions'], val: boolean) {
