@@ -477,7 +477,13 @@ button.hero-mini-pill:hover { border-color: var(--volt); }
 @media (max-width: 640px) {
   .inline-form { grid-template-columns: 1fr; }
   .float-video { width: 132px; top: auto; bottom: 84px; }
-  .stats { gap: 8px; }
+  /* Mobile-first order: wallet + category + services sit at the top, so keep
+     their spacing tight to fit the order flow near the first screen. The hero
+     now lives below the services, so its top padding stays roomy. */
+  .stats { gap: 8px; margin-top: 12px; }
+  .add-funds-wrap { margin: 10px 0 2px; }
+  .chips { margin: 12px 0 2px; }
+  .section-title { margin-top: 16px; }
   .stat { padding: 12px 6px; }
   .hero { padding-top: 18px; }
 }

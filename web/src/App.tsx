@@ -232,40 +232,6 @@ export default function App() {
         />
       ) : (
         <main>
-          <section className="hero">
-            <div className="hero-card">
-              <span className="live-pill"><span className="dot" />PANEL LIVE — ORDERS OPEN</span>
-              <h2 className="hero-title">Numbers go<br /><span className="lime">UP</span> <span className="outline">from here.</span></h2>
-              <p className="hero-sub">Followers, likes, views &amp; more for TikTok, Instagram, Facebook and YouTube. Top up your balance, pick a service, drop your link — done.</p>
-              <div className="hero-mini">
-                <span className="hero-mini-pill">⚡ Fast start</span>
-                <button type="button" className="hero-mini-pill" onClick={() => { if (!profile) { setAuthOpen(true); toast('Please log in or sign up to add funds.'); } else setFundsOpen(true); }}>🛡 JazzCash &amp; bank pay</button>
-                <button type="button" className="hero-mini-pill" onClick={() => setChatOpen(true)}>💬 Live support chat</button>
-              </div>
-              <span className="hero-chip hero-chip-tiktok" aria-hidden="true">♪ TikTok</span>
-              <span className="hero-chip hero-chip-ig" aria-hidden="true">{IG_ICON} Instagram</span>
-              <span className="hero-chip hero-chip-yt" aria-hidden="true">▶ YouTube</span>
-              <span className="hero-chip hero-chip-fb" aria-hidden="true">{FB_ICON} Facebook</span>
-            </div>
-          </section>
-
-          <div className="ticker" aria-hidden="true">
-            <div className="ticker-track">
-              {[...TICKER_ITEMS, ...TICKER_ITEMS].map((t, i) => <span key={i}>🔥 {t}</span>)}
-            </div>
-          </div>
-
-          <div className="quick-cards">
-            <button type="button" className="quick-card" onClick={() => { if (!profile) { setAuthOpen(true); toast('Please log in or sign up to add funds.'); } else setFundsOpen(true); }}>
-              <span className="qc-icon lime">+</span>
-              <span><b>Add funds</b><small>JazzCash / bank QR pay</small></span>
-            </button>
-            <button type="button" className="quick-card" onClick={() => { if (!profile) { setAuthOpen(true); toast('Please log in or sign up to see your orders.'); } else setView('dashboard'); }}>
-              <span className="qc-icon red">▣</span>
-              <span><b>My orders</b><small>{orders.length} placed so far</small></span>
-            </button>
-          </div>
-
           <div className="chips" role="tablist" aria-label="Platform filter">
             {PLATFORMS.map((p) => (
               <button key={p} type="button" role="tab" aria-selected={platform === p}
@@ -369,6 +335,41 @@ export default function App() {
               New services are coming soon. Please check back.
             </div>
           )}
+
+          <section className="hero">
+            <div className="hero-card">
+              <span className="live-pill"><span className="dot" />PANEL LIVE — ORDERS OPEN</span>
+              <h2 className="hero-title">Numbers go<br /><span className="lime">UP</span> <span className="outline">from here.</span></h2>
+              <p className="hero-sub">Followers, likes, views &amp; more for TikTok, Instagram, Facebook and YouTube. Top up your balance, pick a service, drop your link — done.</p>
+              <div className="hero-mini">
+                <span className="hero-mini-pill">⚡ Fast start</span>
+                <button type="button" className="hero-mini-pill" onClick={() => { if (!profile) { setAuthOpen(true); toast('Please log in or sign up to add funds.'); } else setFundsOpen(true); }}>🛡 JazzCash &amp; bank pay</button>
+                <button type="button" className="hero-mini-pill" onClick={() => setChatOpen(true)}>💬 Live support chat</button>
+              </div>
+              <span className="hero-chip hero-chip-tiktok" aria-hidden="true">♪ TikTok</span>
+              <span className="hero-chip hero-chip-ig" aria-hidden="true">{IG_ICON} Instagram</span>
+              <span className="hero-chip hero-chip-yt" aria-hidden="true">▶ YouTube</span>
+              <span className="hero-chip hero-chip-fb" aria-hidden="true">{FB_ICON} Facebook</span>
+            </div>
+          </section>
+
+          <div className="ticker" aria-hidden="true">
+            <div className="ticker-track">
+              {[...TICKER_ITEMS, ...TICKER_ITEMS].map((t, i) => <span key={i}>🔥 {t}</span>)}
+            </div>
+          </div>
+
+          <div className="quick-cards">
+            <button type="button" className="quick-card" onClick={() => { if (!profile) { setAuthOpen(true); toast('Please log in or sign up to add funds.'); } else setFundsOpen(true); }}>
+              <span className="qc-icon lime">+</span>
+              <span><b>Add funds</b><small>JazzCash / bank QR pay</small></span>
+            </button>
+            <button type="button" className="quick-card" onClick={() => { if (!profile) { setAuthOpen(true); toast('Please log in or sign up to see your orders.'); } else setView('dashboard'); }}>
+              <span className="qc-icon red">▣</span>
+              <span><b>My orders</b><small>{orders.length} placed so far</small></span>
+            </button>
+          </div>
+
         </main>
       )}
 
