@@ -115,6 +115,19 @@ export default function App() {
     [services, selectedId],
   );
 
+  // Auto-select the first service: on initial load (logged in or logged out)
+  // and whenever the platform filter changes, the first service of the
+  // currently visible list must already be selected — the shop must never sit
+  // on "Choose a service…" with no detail and no boxes shown. This only fills
+  // an empty (or no-longer-visible) selection; a manual pick is never
+  // overridden while it still belongs to the visible list.
+  useEffect(() => {
+    if (loading) return;
+    if (visibleServices.length === 0) return;
+    if (selectedId && visibleServices.some((s) => s.id === selectedId)) return;
+    setSelectedId(visibleServices[0].id);
+  }, [loading, visibleServices, selectedId]);
+
   // Service-cards grid: hidden until a service is selected. Once one is
   // picked, show only its own category's packages (same platform AND same
   // category as the selected service). The admin "Show service cards"
