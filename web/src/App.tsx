@@ -54,6 +54,33 @@ export default function App() {
   const [bootstrapError, setBootstrapError] = useState('');
   const [profile, setProfile] = useState<Profile | null>(null);
   const [view, setView] = useState<View>('store');
+  // ITEM 3 (2026-11-28): the dashboard tab is owned here so the header ☰
+  // menu and the dashboard's own ☰ menu open the same sections.
+  const [dashboardTab, setDashboardTab] = useState<'orders' | 'funds' | 'referral' | 'password'>('orders');
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
+  const headerMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!headerMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (headerMenuRef.current && !headerMenuRef.current.contains(e.target as Node)) setHeaderMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [headerMenuOpen]);
+  // Identical items in the header menu and the dashboard menu.
+  const headerMenuItems = [
+    { id: 'orders', label: 'My Orders' },
+    { id: 'funds', label: 'My Fund Request' },
+    { id: 'referral', label: 'Referral Earn' },
+    { id: 'password', label: 'Change Password' },
+    { id: 'addfunds', label: 'Add Funds' },
+  ] as const;
+  function openHeaderMenuItem(id: string) {
+    setHeaderMenuOpen(false);
+    if (id === 'addfunds') { setFundsOpen(true); return; }
+    setDashboardTab(id as 'orders' | 'funds' | 'referral' | 'password');
+    setView('dashboard');
+  }
   const [platform, setPlatform] = useState<Platform>('All');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -200,7 +227,25 @@ export default function App() {
           <button type="button" className="btn btn-ghost" onClick={() => setView('store')}>Shop</button>
           {profile ? (
             <>
-              <button type="button" className="btn" onClick={() => setView('dashboard')}>My Dashboard</button>
+              {/* ITEM 3: the "My Dashboard" button is gone — the ☰ menu is
+                  the entry point, here in the front-page header AND inside
+                  the dashboard (identical items, identical behaviour). */}
+              <div ref={headerMenuRef} style={{ position: 'relative' }}>
+                <button type="button" className="btn" onClick={() => setHeaderMenuOpen((v) => !v)} aria-label="Menu" aria-expanded={headerMenuOpen}>
+                  ☰ Menu
+                </button>
+                {headerMenuOpen && (
+                  <div className="panel" style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', minWidth: 220, width: 'max-content', maxWidth: '86vw', zIndex: 30, padding: 6 }}>
+                    {headerMenuItems.map((it) => (
+                      <button key={it.id} type="button" className="btn btn-block" style={{ justifyContent: 'flex-start', marginBottom: 4 }}
+                        onClick={() => openHeaderMenuItem(it.id)}>
+                        {it.label}
+                        {it.id !== 'addfunds' && view === 'dashboard' && dashboardTab === it.id ? ' ✓' : ''}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               {canAdmin && <button type="button" className="btn" onClick={() => setView('admin')}>Admin Panel</button>}
               <span className="user-chip">{profile.name}</span>
               {isAdmin && <span className="admin-badge">ADMIN</span>}
@@ -234,6 +279,7 @@ export default function App() {
         <Dashboard
           profile={profile} orders={orders} fundRequests={fundRequests} methods={methods}
           toast={toast} onRefresh={() => { void loadMe(); }}
+          tab={dashboardTab} onTabChange={setDashboardTab}
           onAddFunds={() => setFundsOpen(true)}
           onCancelOrder={async (orderId) => {
             // OPTIMISTIC: the order shows Cancelled and the balance jumps
@@ -390,7 +436,7 @@ export default function App() {
               <span className="qc-icon lime">+</span>
               <span><b>Add funds</b><small>JazzCash / bank QR pay</small></span>
             </button>
-            <button type="button" className="quick-card" onClick={() => { if (!profile) { setAuthOpen(true); toast('Please log in or sign up to see your orders.'); } else setView('dashboard'); }}>
+            <button type="button" className="quick-card" onClick={() => { if (!profile) { setAuthOpen(true); toast('Please log in or sign up to see your orders.'); } else { setDashboardTab('orders'); setView('dashboard'); } }}>
               <span className="qc-icon red">▣</span>
               <span><b>My orders</b><small>{orders.length} placed so far</small></span>
             </button>
@@ -758,14 +804,23 @@ function AddFundsSheet({ methods, toast, onClose, onDone }: {
 
 /* ================= Dashboard ================= */
 
-function Dashboard({ profile, orders, fundRequests, methods, toast, onRefresh, onAddFunds, onCancelOrder }: {
+function Dashboard({ profile, orders, fundRequests, methods, toast, onRefresh, onAddFunds, onCancelOrder, tab, onTabChange }: {
   profile: Profile; orders: Order[]; fundRequests: FundRequest[]; methods: PaymentMethod[];
   toast: (m: string, e?: boolean) => void; onRefresh: () => void;
   onAddFunds: () => void; onCancelOrder: (id: string) => void;
+  tab: 'orders' | 'funds' | 'referral' | 'password';
+  onTabChange: (t: 'orders' | 'funds' | 'referral' | 'password') => void;
 }) {
-  const [tab, setTab] = useState<'orders' | 'funds' | 'referral' | 'password'>('orders');
   const [menuOpen, setMenuOpen] = useState(false);
+  const [orderQuery, setOrderQuery] = useState('');
   const menuRef = useRef<HTMLDivElement>(null);
+  // ITEM 4: search filters ONLY this customer's own orders (the `orders`
+  // prop comes from getme, which returns nobody else's orders) — a code
+  // substring, case-insensitive, never exposes another customer's order.
+  const orderQueryNorm = orderQuery.trim().toLowerCase();
+  const filteredOrders = orderQueryNorm
+    ? orders.filter((o) => (o.code || '').toLowerCase().includes(orderQueryNorm))
+    : orders;
   useEffect(() => {
     if (!menuOpen) return;
     const onDown = (e: MouseEvent) => {
@@ -796,7 +851,7 @@ function Dashboard({ profile, orders, fundRequests, methods, toast, onRefresh, o
                   onClick={() => {
                     setMenuOpen(false);
                     if (it.id === 'addfunds') { onAddFunds(); return; }
-                    setTab(it.id as 'orders' | 'funds' | 'referral' | 'password');
+                    onTabChange(it.id as 'orders' | 'funds' | 'referral' | 'password');
                   }}>
                   {it.label}
                   {it.count !== null ? ` (${it.count})` : ''}
@@ -810,8 +865,18 @@ function Dashboard({ profile, orders, fundRequests, methods, toast, onRefresh, o
       {tab === 'orders' && (
         <div className="panel">
           <h3>My Orders</h3>
+          {orders.length > 0 && (
+            <label className="field" style={{ marginBottom: 12 }}>
+              <span>Search by Order ID</span>
+              <input className="input" value={orderQuery} onChange={(e) => setOrderQuery(e.target.value)}
+                placeholder="e.g. MG-N37QCX" autoComplete="off" />
+            </label>
+          )}
           {orders.length === 0 && <p style={{ color: 'var(--muted)' }}>No orders yet. Pick a service from the shop to place your first order.</p>}
-          {orders.map((o) => (
+          {orders.length > 0 && filteredOrders.length === 0 && (
+            <p style={{ color: 'var(--muted)' }}>No orders match “{orderQuery.trim()}”. Check the code and try again.</p>
+          )}
+          {filteredOrders.map((o) => (
             <div key={o.id} className="row-item">
               <div className="top">
                 <b>{o.code || o.id}</b>

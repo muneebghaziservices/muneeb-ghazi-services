@@ -518,6 +518,14 @@ function OrdersTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
   const [refundForm, setRefundForm] = useState<RefundForm | null>(null);
   const [refundBusy, setRefundBusy] = useState(false);
   const [refundErr, setRefundErr] = useState('');
+  const [query, setQuery] = useState('');
+  // ITEM 4: the admin list is fully fetched (listOrders, up to 500), so
+  // client-side filtering is fast and exact — code substring,
+  // case-insensitive, across any user's orders.
+  const queryNorm = query.trim().toLowerCase();
+  const filtered = queryNorm
+    ? list.filter((o) => (o.code || '').toLowerCase().includes(queryNorm))
+    : list;
   const load = useCallback(async () => {
     try {
       const d = await api<{ orders?: unknown[] }>('listOrders');
@@ -593,7 +601,17 @@ function OrdersTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
       <h3>All Orders{loaded ? ` (${list.length})` : ''}</h3>
       {err && <p className="error">{err}</p>}
       {!loaded && <p style={{ color: 'var(--muted)' }}>Loading orders…</p>}
-      {list.map((o) => (
+      {loaded && list.length > 0 && (
+        <label className="field" style={{ marginBottom: 12 }}>
+          <span>Search by Order ID</span>
+          <input className="input" value={query} onChange={(e) => setQuery(e.target.value)}
+            placeholder="e.g. MG-N37QCX — any user's order code" autoComplete="off" />
+        </label>
+      )}
+      {loaded && list.length > 0 && filtered.length === 0 && (
+        <p style={{ color: 'var(--muted)' }}>No orders match “{query.trim()}”.</p>
+      )}
+      {filtered.map((o) => (
         <div key={o.id} className="row-item">
           <div className="top">
             <b>{o.code || o.id}</b>
