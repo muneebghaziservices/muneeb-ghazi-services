@@ -21,3 +21,12 @@
   from = "/*"
   to = "/index.html"
   status = 200
+
+# Install each function's own dependencies (netlify/functions/package.json)
+# so the API function can resolve @supabase/supabase-js at build time.
+[[plugins]]
+  package = "@netlify/plugin-functions-install-core"
+
+
+
+
