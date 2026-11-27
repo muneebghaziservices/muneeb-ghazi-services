@@ -110,12 +110,28 @@ async function createSession(profileId: string): Promise<string> {
 
 async function requireAuth(token: string | undefined | null): Promise<Profile> {
   if (!token) throw Object.assign(new Error('Not signed in'), { status: 401 });
-  const { data: session, error } = await db()
+  // SPEED (2026-11-28): one round trip instead of two — sessions -> profiles
+  // is a FK join, so the session lookup and the profile fetch happen in a
+  // single query. The old two sequential queries cost ~0.3-0.5s on EVERY
+  // API call (Supabase is in Singapore, the function is not). If the join
+  // ever fails, fall back to the old two-query path.
+  try {
+    const { data, error } = await db()
+      .from('sessions')
+      .select('profile_id, profiles(*)')
+      .eq('token', token)
+      .maybeSingle();
+    if (!error && data && (data as any).profiles) return (data as any).profiles as Profile;
+    if (error) throw error;
+  } catch {
+    // Fall through to the two-query path below.
+  }
+  const { data: session, error: serr } = await db()
     .from('sessions')
     .select('profile_id')
     .eq('token', token)
     .maybeSingle();
-  if (error || !session) throw Object.assign(new Error('Invalid session'), { status: 401 });
+  if (serr || !session) throw Object.assign(new Error('Invalid session'), { status: 401 });
   const { data: profile, error: perr } = await db()
     .from('profiles')
     .select('*')
@@ -669,6 +685,38 @@ async function placeOrder(p: Params, token: string | null) {
   return { order, firstOrder };
 }
 
+// Shared wallet-refund for Cancel / Partial (2026-11-28): credit `refundPaisa`
+// to the order owner's balance and reduce their total spent by the same
+// amount (never below 0) — the mirror of how resolveFund credits balance.
+async function applyOrderRefund(order: any, refundPaisa: number): Promise<void> {
+  const { data: owner } = await db()
+    .from('profiles')
+    .select('balance_paisa, total_spent_paisa')
+    .eq('id', order.profile_id)
+    .single();
+  if (owner) {
+    await db()
+      .from('profiles')
+      .update({
+        balance_paisa: owner.balance_paisa + refundPaisa,
+        total_spent_paisa: Math.max(0, owner.total_spent_paisa - refundPaisa),
+      })
+      .eq('id', order.profile_id);
+  }
+}
+
+// Update an order with the refund fields (status + reason + refunded_paisa).
+// Returns false when the reason/refunded_paisa columns do not exist yet
+// (migration 0004 not run) — the caller then falls back to a status-only
+// update; the refund still happens and the response reports reasonSaved:
+// false instead of failing the whole request.
+async function saveOrderRefundFields(orderId: string, patch: Record<string, unknown>): Promise<boolean> {
+  const { error } = await db().from('orders').update(patch).eq('id', orderId);
+  if (error && /column .* does not exist/i.test(error.message || '')) return false;
+  if (error) throw new Error(error.message);
+  return true;
+}
+
 async function cancelOrder(p: Params, token: string | null) {
   const me = await requireAuth(token);
   if (!p.orderId) throw new Error('Missing orderId');
@@ -683,28 +731,19 @@ async function cancelOrder(p: Params, token: string | null) {
   }
   if (order.status !== 'Pending') throw new Error('Only Pending orders can be cancelled');
 
-  const { error: uerr } = await db()
-    .from('orders')
-    .update({ status: 'Cancelled' })
-    .eq('id', order.id);
-  if (uerr) throw new Error(uerr.message);
-
-  // Refund to the order owner's balance.
-  const { data: owner } = await db()
-    .from('profiles')
-    .select('balance_paisa, total_spent_paisa')
-    .eq('id', order.profile_id)
-    .single();
-  if (owner) {
-    await db()
-      .from('profiles')
-      .update({
-        balance_paisa: owner.balance_paisa + order.amount_paisa,
-        total_spent_paisa: Math.max(0, owner.total_spent_paisa - order.amount_paisa),
-      })
-      .eq('id', order.profile_id);
+  // Status first (a failed request can then be retried safely — a
+  // refunded-then-failed request would double-refund on retry).
+  const saved = await saveOrderRefundFields(order.id, {
+    status: 'Cancelled',
+    refunded_paisa: order.amount_paisa,
+  });
+  if (!saved) {
+    const { error: uerr } = await db().from('orders').update({ status: 'Cancelled' }).eq('id', order.id);
+    if (uerr) throw new Error(uerr.message);
   }
-  return { cancelled: true };
+  // Full refund to the order owner's balance.
+  await applyOrderRefund(order, order.amount_paisa);
+  return { cancelled: true, refundedPaisa: order.amount_paisa, reasonSaved: saved };
 }
 
 async function listOrders(_p: Params, token: string | null) {
@@ -722,8 +761,55 @@ async function listOrders(_p: Params, token: string | null) {
 async function setOrderStatus(p: Params, token: string | null) {
   const me = await requireAuth(token);
   requirePerm(me, 'orders');
-  const valid = ['Pending', 'In Progress', 'Completed', 'Cancelled'];
+  // 'Partial' added 2026-11-28 (migration 0004 widens the DB check too).
+  const valid = ['Pending', 'In Progress', 'Completed', 'Cancelled', 'Partial'];
   if (!p.orderId || !valid.includes(p.status)) throw new Error('Invalid order or status');
+  const { data: order, error: ferr } = await db()
+    .from('orders')
+    .select('*')
+    .eq('id', p.orderId)
+    .maybeSingle();
+  if (ferr || !order) throw new Error('Order not found');
+  // An order that already refunded (Cancelled / Partial) must never refund
+  // twice — its status is final.
+  if (order.status === 'Cancelled' || order.status === 'Partial') {
+    throw new Error(`Order is already ${order.status} — it cannot be changed again`);
+  }
+
+  if (p.status === 'Cancelled' || p.status === 'Partial') {
+    // Cancel / Partial REQUIRE a reason, and Partial requires a refund
+    // amount (Rs, > 0 and <= order total). Cancel always refunds the FULL
+    // order amount — this is the fix for the old behaviour where the admin
+    // dropdown Cancel changed the status but never credited the wallet
+    // (only the customer's own cancelOrder refunded).
+    const reason = String(p.reason || '').trim();
+    if (!reason) throw new Error('A reason is required to cancel or partially refund an order');
+    if (reason.length > 500) throw new Error('Reason is too long (max 500 characters)');
+    const refundPaisa = p.status === 'Cancelled'
+      ? Number(order.amount_paisa)
+      : Math.round(Number(p.refundAmountRs) * 100);
+    if (p.status === 'Partial') {
+      if (!Number.isInteger(refundPaisa) || refundPaisa <= 0 || refundPaisa > Number(order.amount_paisa)) {
+        throw new Error('Refund amount must be more than Rs 0 and no more than the order total');
+      }
+    }
+    const saved = await saveOrderRefundFields(order.id, {
+      status: p.status,
+      reason,
+      refunded_paisa: refundPaisa,
+    });
+    if (!saved) {
+      const { error: uerr } = await db()
+        .from('orders')
+        .update({ status: p.status })
+        .eq('id', order.id);
+      if (uerr) throw new Error(uerr.message);
+    }
+    await applyOrderRefund(order, refundPaisa);
+    const { data: updated } = await db().from('orders').select('*').eq('id', order.id).maybeSingle();
+    return { order: updated ?? { ...order, status: p.status, reason, refunded_paisa: refundPaisa }, refundedPaisa: refundPaisa, reasonSaved: saved };
+  }
+
   const { data, error } = await db()
     .from('orders')
     .update({ status: p.status })
@@ -996,17 +1082,20 @@ async function getConversation(p: Params, token: string | null) {
     }
   }
 
-  const { data: messages } = await db()
-    .from('messages')
-    .select('*')
-    .eq('conversation_id', conversation.id)
-    .order('created_at', { ascending: true });
-  // Flat customer fields for the frontend client.
-  const { data: owner } = await db()
-    .from('profiles')
-    .select('display_name')
-    .eq('id', conversation.profile_id)
-    .maybeSingle();
+  // SPEED (2026-11-28): the messages list and the owner name are
+  // independent — fetch them in parallel instead of one after the other.
+  const [{ data: messages }, { data: owner }] = await Promise.all([
+    db()
+      .from('messages')
+      .select('*')
+      .eq('conversation_id', conversation.id)
+      .order('created_at', { ascending: true }),
+    db()
+      .from('profiles')
+      .select('display_name')
+      .eq('id', conversation.profile_id)
+      .maybeSingle(),
+  ]);
   return {
     conversation: {
       ...conversation,
@@ -1061,14 +1150,12 @@ async function sendMessage(p: Params, token: string | null) {
     .select('*')
     .single();
   if (merr || !data) throw new Error(merr?.message || 'Could not send message');
-  // Return the updated conversation (with messages embedded) so the
-  // frontend thread updates without a reload.
-  const { data: allMessages } = await db()
-    .from('messages')
-    .select('*')
-    .eq('conversation_id', conv.id)
-    .order('created_at', { ascending: true });
-  return { message: data, conversation: { ...conv, messages: allMessages ?? [] } };
+  // SPEED (2026-11-28): do NOT refetch the whole thread after every send —
+  // the old code re-read ALL messages (a 4th sequential round trip) and the
+  // send round trip took ~2.1s. The client already holds the thread and
+  // appends this message (replacing its optimistic copy), so return just
+  // the new message + the conversation id/status.
+  return { message: data, conversation: { id: conv.id, status: conv.status } };
 }
 
 // Latest message per conversation (inbox previews + unread badges). The
@@ -1118,10 +1205,14 @@ async function listConversations(_p: Params, token: string | null) {
 async function getAdminAlerts(_p: Params, token: string | null) {
   const me = await requireAuth(token);
   requireAdmin(me);
-  const [convRes, fundsRes, ordersRes] = await Promise.all([
+  const [convRes, fundsRes, ordersRes, pendingFundsRes] = await Promise.all([
     db().from('conversations').select('*, profiles(display_name)').order('created_at', { ascending: false }).limit(200),
     db().from('fund_requests').select('id', { count: 'exact', head: true }).eq('status', 'Pending'),
     db().from('orders').select('id', { count: 'exact', head: true }).eq('status', 'Pending'),
+    // PROBLEM 1 (2026-11-28): the alert used to carry only a COUNT for
+    // funds, so nothing ever said WHO requested funds. The panel now lists
+    // each pending request by name + amount.
+    db().from('fund_requests').select('id, amount_paisa, sender_name, created_at, profile_id, profiles(display_name)').eq('status', 'Pending').order('created_at', { ascending: false }).limit(5),
   ]);
   if (convRes.error) throw new Error(convRes.error.message);
   const rows = (convRes.data ?? []) as any[];
@@ -1129,6 +1220,13 @@ async function getAdminAlerts(_p: Params, token: string | null) {
   return {
     pendingFunds: fundsRes.count ?? 0,
     pendingOrders: ordersRes.count ?? 0,
+    pendingFundsList: ((pendingFundsRes.data ?? []) as any[]).map((f: any) => ({
+      id: f.id,
+      customer_name: f.profiles?.display_name ?? '',
+      sender_name: f.sender_name ?? '',
+      amount_paisa: Number(f.amount_paisa || 0),
+      created_at: f.created_at,
+    })),
     conversations: rows.map((c: any) => ({
       id: c.id,
       customer_name: c.profiles?.display_name ?? '',
@@ -1234,8 +1332,9 @@ async function listReferrals(_p: Params, token: string | null) {
 // ------------------------------------------------------------- admin stats
 // Dashboard totals for the Admin Panel (admin only). Period boundaries use
 // the owner's timezone (Asia/Karachi, UTC+5, no DST). Sales exclude
-// cancelled orders (those auto-refund); order counts include every order
-// placed. Fetches up to 5000 order rows — fine at this shop's scale.
+// cancelled orders (those auto-refund) and count Partial orders net of
+// their refund; order counts include every order placed. Fetches up to
+// 5000 order rows — fine at this shop's scale.
 
 const PKT_OFFSET_MS = 5 * 60 * 60 * 1000;
 
@@ -1249,12 +1348,20 @@ async function getAdminStats(_p: Params, token: string | null) {
   requireAdmin(me);
   const [profilesRes, ordersRes] = await Promise.all([
     db().from('profiles').select('id, created_at').order('created_at', { ascending: true }),
-    db().from('orders').select('amount_paisa, status, created_at').order('created_at', { ascending: false }).limit(5000),
+    // refunded_paisa needs migration 0004; if it has not run yet, retry
+    // without it instead of failing the whole stats call.
+    (async () => {
+      const r = await db().from('orders').select('amount_paisa, refunded_paisa, status, created_at').order('created_at', { ascending: false }).limit(5000);
+      if (r.error && /column .* does not exist/i.test(r.error.message || '')) {
+        return db().from('orders').select('amount_paisa, status, created_at').order('created_at', { ascending: false }).limit(5000);
+      }
+      return r;
+    })(),
   ]);
   if (profilesRes.error) throw new Error(profilesRes.error.message);
   if (ordersRes.error) throw new Error(ordersRes.error.message);
   const profiles = (profilesRes.data ?? []) as { id: string; created_at: string }[];
-  const orders = (ordersRes.data ?? []) as { amount_paisa: number; status: string; created_at: string }[];
+  const orders = (ordersRes.data ?? []) as { amount_paisa: number; refunded_paisa?: number; status: string; created_at: string }[];
 
   const nowMs = Date.now();
   const pktNow = new Date(nowMs + PKT_OFFSET_MS);
@@ -1271,7 +1378,12 @@ async function getAdminStats(_p: Params, token: string | null) {
 
   for (const o of orders) {
     const t = Date.parse(o.created_at);
-    const sale = o.status !== 'Cancelled' ? Number(o.amount_paisa || 0) : 0;
+    // Cancelled = 0 (fully refunded). Partial = net of the refund.
+    const sale = o.status === 'Cancelled'
+      ? 0
+      : o.status === 'Partial'
+        ? Math.max(0, Number(o.amount_paisa || 0) - Number(o.refunded_paisa || 0))
+        : Number(o.amount_paisa || 0);
     allTime.orders += 1;
     allTime.salesPaisa += sale;
     if (t >= dayStart) { today.orders += 1; today.salesPaisa += sale; }

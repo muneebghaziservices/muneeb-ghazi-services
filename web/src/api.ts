@@ -171,9 +171,11 @@ export interface Order {
   quantity: number;
   link: string;
   amountPaisa: number;
-  status: string; // Pending | In Progress | Completed | Cancelled
+  status: string; // Pending | In Progress | Completed | Cancelled | Partial
   createdAt: string;
   customerName?: string;
+  reason?: string; // admin reason for Cancel / Partial (migration 0004)
+  refundedPaisa?: number; // refunded to the wallet: full total on Cancel, entered amount on Partial
 }
 
 export interface FundRequest {
@@ -343,6 +345,8 @@ export function normOrder(r: Record<string, unknown>): Order {
     status: String(pick(r, ['status'], 'Pending')),
     createdAt: String(pick(r, ['created_at', 'createdAt'], '')),
     customerName: String(pick(r, ['customer_name', 'customerName'], '')),
+    reason: String(pick(r, ['reason'], '')) || undefined,
+    refundedPaisa: num(pick(r, ['refunded_paisa', 'refundedPaisa'], 0)),
   };
 }
 

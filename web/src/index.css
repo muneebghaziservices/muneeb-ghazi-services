@@ -356,6 +356,7 @@ button.hero-mini-pill:hover { border-color: var(--volt); }
 .status.completed, .status.approved, .status.open { background: rgba(90,220,120,.14); color: #7fe39a; border-color: rgba(90,220,120,.4); }
 .status.cancelled, .status.rejected, .status.closed { background: rgba(255,93,93,.12); color: #ff9a9a; border-color: rgba(255,93,93,.4); }
 .status.in-progress { background: rgba(255,200,60,.12); color: #ffd479; border-color: rgba(255,200,60,.4); }
+.status.partial { background: rgba(255,140,60,.14); color: #ffb27a; border-color: rgba(255,140,60,.45); }
 .inline-form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .inline-form .full { grid-column: 1 / -1; }
 .qr-img { width: 180px; height: 180px; object-fit: contain; background: #fff; border-radius: 12px; padding: 8px; }

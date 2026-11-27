@@ -11,7 +11,9 @@ import type {
 
 type Tab = 'services' | 'orders' | 'funds' | 'methods' | 'messages' | 'team' | 'referrals' | 'withdrawals';
 
-const ORDER_STATUSES = ['Pending', 'In Progress', 'Completed', 'Cancelled'];
+const ORDER_STATUSES = ['Pending', 'In Progress', 'Completed', 'Cancelled', 'Partial'];
+
+type RefundForm = { orderId: string; mode: 'Cancelled' | 'Partial'; reason: string; refundRs: string };
 
 /* ================= Admin alerts (badges + sound) ================= */
 // Unread state lives in this browser only (localStorage): the admin's
@@ -446,6 +448,9 @@ function OrdersTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
   const [list, setList] = useState<Order[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState('');
+  const [refundForm, setRefundForm] = useState<RefundForm | null>(null);
+  const [refundBusy, setRefundBusy] = useState(false);
+  const [refundErr, setRefundErr] = useState('');
   const load = useCallback(async () => {
     try {
       const d = await api<{ orders?: unknown[] }>('listOrders');
@@ -454,9 +459,66 @@ function OrdersTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
   }, []);
   useEffect(() => { void load(); }, [load]);
 
+  // OPTIMISTIC (2026-11-28): the row updates the instant the admin picks a
+  // status; the server syncs in the background and only a failure rolls
+  // the row back. Waiting ~1.5s for the server before anything moved was
+  // the "every button has a delay" complaint.
   async function setStatus(orderId: string, status: string) {
-    try { await api('setOrderStatus', { orderId, status }); toast(`Order → ${status}`); void load(); }
-    catch (e) { toast(e instanceof Error ? e.message : 'Update failed.', true); }
+    const prev = list;
+    const target = prev.find((o) => o.id === orderId);
+    if (!target || target.status === status) return;
+    // Cancel / Partial need a reason (+ a refund amount for Partial), so
+    // they open the inline form below instead of applying immediately.
+    if (status === 'Cancelled' || status === 'Partial') {
+      setRefundForm({ orderId, mode: status, reason: '', refundRs: '' });
+      setRefundErr('');
+      return;
+    }
+    setList((l) => l.map((o) => (o.id === orderId ? { ...o, status } : o)));
+    toast(`Order → ${status}`);
+    try {
+      const d = await api<{ order?: Record<string, unknown> }>('setOrderStatus', { orderId, status });
+      if (d.order) setList((l) => l.map((o) => (o.id === orderId ? normOrder(d.order as Record<string, unknown>) : o)));
+    } catch (e) {
+      setList(prev);
+      toast(e instanceof Error ? e.message : 'Update failed.', true);
+    }
+  }
+
+  async function confirmRefund() {
+    if (!refundForm) return;
+    const order = list.find((o) => o.id === refundForm.orderId);
+    if (!order) return;
+    const reason = refundForm.reason.trim();
+    if (!reason) { setRefundErr('A reason is required — the customer will see it.'); return; }
+    const totalRs = Math.round(order.amountPaisa / 100);
+    const refundRs = refundForm.mode === 'Cancelled' ? totalRs : Math.floor(Number(refundForm.refundRs));
+    if (refundForm.mode === 'Partial' && (!Number.isFinite(refundRs) || refundRs <= 0 || refundRs > totalRs)) {
+      setRefundErr(`Refund amount must be more than Rs 0 and no more than the order total (Rs ${totalRs}).`);
+      return;
+    }
+    setRefundErr('');
+    setRefundBusy(true);
+    // Optimistic: status + reason + refund show instantly; the wallet
+    // credit happens on the server in the background.
+    const prev = list;
+    const optimistic: Order = { ...order, status: refundForm.mode, reason, refundedPaisa: refundRs * 100 };
+    setList((l) => l.map((o) => (o.id === order.id ? optimistic : o)));
+    const mode = refundForm.mode;
+    setRefundForm(null);
+    toast(`Order → ${mode} · Rs ${refundRs.toLocaleString('en-PK')} refunded to the customer's wallet.`);
+    try {
+      const d = await api<{ order?: Record<string, unknown>; reasonSaved?: boolean }>('setOrderStatus', {
+        orderId: order.id, status: mode, reason,
+        ...(mode === 'Partial' ? { refundAmountRs: refundRs } : {}),
+      });
+      if (d.order) setList((l) => l.map((o) => (o.id === order.id ? normOrder(d.order as Record<string, unknown>) : o)));
+      if (d.reasonSaved === false) toast('Refund credited, but the reason could not be saved yet (database update pending).', true);
+      void load();
+    } catch (e) {
+      setList(prev);
+      toast(e instanceof Error ? e.message : 'Refund failed — nothing was changed.', true);
+    } finally { setRefundBusy(false); }
   }
 
   return (
@@ -473,6 +535,13 @@ function OrdersTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
           <div className="meta-line">
             {o.customerName ? `${o.customerName} · ` : ''}{o.serviceTitle || 'Service'} · Qty {o.quantity} · {fmtRs(o.amountPaisa)}
             {o.link && <><br />Link: <a href={o.link} target="_blank" rel="noreferrer">{o.link}</a></>}
+            {o.createdAt && <><br />{new Date(o.createdAt).toLocaleString()}</>}
+            {(o.status === 'Cancelled' || o.status === 'Partial') && (
+              <>
+                {o.reason && <><br />Reason: <b style={{ color: 'var(--text)' }}>{o.reason}</b></>}
+                {o.refundedPaisa ? <><br />Refunded to wallet: <b style={{ color: 'var(--volt)' }}>{fmtRs(o.refundedPaisa)}</b></> : null}
+              </>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
             <label style={{ fontSize: 13, color: 'var(--muted)' }}>Status:</label>
@@ -480,7 +549,41 @@ function OrdersTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
               {ORDER_STATUSES.map((s) => <option key={s}>{s}</option>)}
             </select>
             <button type="button" className="btn btn-sm" onClick={async () => { await copyText(o.code || o.id); toast('Order code copied.'); }}>Copy code</button>
+            {o.status !== 'Cancelled' && o.status !== 'Partial' && (
+              <>
+                <button type="button" className="btn btn-danger btn-sm" onClick={() => setStatus(o.id, 'Cancelled')}>Cancel</button>
+                <button type="button" className="btn btn-sm" onClick={() => setStatus(o.id, 'Partial')}>Partial</button>
+              </>
+            )}
           </div>
+          {refundForm && refundForm.orderId === o.id && (
+            <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+              <b>{refundForm.mode === 'Cancelled' ? 'Cancel order — full refund' : 'Partial refund'}</b>
+              <p className="hint" style={{ margin: '6px 0 10px' }}>
+                {refundForm.mode === 'Cancelled'
+                  ? `The FULL order amount (${fmtRs(o.amountPaisa)}) will be refunded to the customer's wallet.`
+                  : `Order total is ${fmtRs(o.amountPaisa)} — enter how much of it goes back to the customer's wallet.`}
+              </p>
+              <label className="field"><span>Reason (required — shown to the customer)</span>
+                <input className="input" value={refundForm.reason}
+                  onChange={(e) => setRefundForm({ ...refundForm, reason: e.target.value })}
+                  placeholder="e.g. Video was removed / could not be delivered" />
+              </label>
+              {refundForm.mode === 'Partial' && (
+                <label className="field"><span>Refund amount (Rs) — max Rs {Math.round(o.amountPaisa / 100)}</span>
+                  <input className="input" type="number" min={1} max={Math.round(o.amountPaisa / 100)} value={refundForm.refundRs}
+                    onChange={(e) => setRefundForm({ ...refundForm, refundRs: e.target.value })} placeholder="e.g. 100" />
+                </label>
+              )}
+              {refundErr && <p className="error">{refundErr}</p>}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button type="button" className="btn btn-primary btn-sm" disabled={refundBusy} onClick={() => void confirmRefund()}>
+                  {refundBusy ? 'Saving…' : refundForm.mode === 'Cancelled' ? 'Confirm cancel + refund' : 'Confirm partial refund'}
+                </button>
+                <button type="button" className="btn btn-sm" disabled={refundBusy} onClick={() => setRefundForm(null)}>Back</button>
+              </div>
+            </div>
+          )}
         </div>
       ))}
       {loaded && list.length === 0 && <p style={{ color: 'var(--muted)' }}>No orders yet.</p>}
@@ -853,7 +956,7 @@ function DashboardStats() {
           ))}
         </tbody>
       </table>
-      <p className="hint">Sales exclude cancelled orders (those auto-refund). Periods follow Pakistan time.</p>
+      <p className="hint">Sales exclude cancelled orders (those auto-refund); Partial orders count net of their refund. Periods follow Pakistan time.</p>
     </div>
   );
 }

@@ -236,11 +236,24 @@ export default function App() {
           toast={toast} onRefresh={() => { void loadMe(); }}
           onAddFunds={() => setFundsOpen(true)}
           onCancelOrder={async (orderId) => {
+            // OPTIMISTIC: the order shows Cancelled and the balance jumps
+            // back instantly; the server confirms in the background.
+            const target = orders.find((o) => o.id === orderId);
+            const prevOrders = orders;
+            const prevProfile = profile;
+            if (target) {
+              setOrders((l) => l.map((o) => (o.id === orderId ? { ...o, status: 'Cancelled', refundedPaisa: o.amountPaisa } : o)));
+              setProfile((p) => (p ? { ...p, balancePaisa: p.balancePaisa + target.amountPaisa, totalSpentPaisa: Math.max(0, p.totalSpentPaisa - target.amountPaisa) } : p));
+              toast(`Order cancelled — ${fmtRs(target.amountPaisa)} refunded to your balance.`);
+            }
             try {
               await api('cancelOrder', { orderId });
-              toast('Order cancelled. Refund will be added to your balance.');
               void loadMe();
-            } catch (e) { toast(e instanceof Error ? e.message : 'Cancel failed.', true); }
+            } catch (e) {
+              setOrders(prevOrders);
+              if (prevProfile) setProfile(prevProfile);
+              toast(e instanceof Error ? e.message : 'Cancel failed.', true);
+            }
           }}
         />
       ) : (
@@ -808,6 +821,12 @@ function Dashboard({ profile, orders, fundRequests, methods, toast, onRefresh, o
                 {o.serviceTitle || 'Service'} · Qty {o.quantity} · {fmtRs(o.amountPaisa)}
                 {o.link && <><br />Link: <a href={o.link} target="_blank" rel="noreferrer">{o.link}</a></>}
                 {o.createdAt && <><br />{new Date(o.createdAt).toLocaleString()}</>}
+                {(o.status === 'Cancelled' || o.status === 'Partial') && (
+                  <>
+                    {o.reason && <><br />Reason: <b style={{ color: 'var(--text)' }}>{o.reason}</b></>}
+                    {o.refundedPaisa ? <><br />Refunded to your wallet: <b style={{ color: 'var(--volt)' }}>{fmtRs(o.refundedPaisa)}</b></> : null}
+                  </>
+                )}
               </div>
               {o.status === 'Pending' && (
                 <button type="button" className="btn btn-danger btn-sm" style={{ marginTop: 10 }}
