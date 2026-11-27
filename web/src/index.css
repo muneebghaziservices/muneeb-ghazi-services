@@ -86,6 +86,7 @@ img, video { max-width: 100%; }
   border-radius: 12px; padding: 12px 14px; font-size: 15px; outline: none;
 }
 .input:focus, .textarea:focus, .select:focus { border-color: var(--volt); box-shadow: 0 0 0 3px rgba(217,255,61,.18); }
+.input:disabled { opacity: .65; cursor: not-allowed; border-style: dashed; }
 .textarea { min-height: 110px; resize: vertical; }
 .hint { font-size: 12.5px; color: var(--muted); margin: -4px 0 12px; }
 .error { color: var(--danger); font-size: 13.5px; margin: 8px 0; }
@@ -360,6 +361,29 @@ button.hero-mini-pill:hover { border-color: var(--volt); }
 .qr-img { width: 180px; height: 180px; object-fit: contain; background: #fff; border-radius: 12px; padding: 8px; }
 .method-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
 .copy-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+/* Refer & Earn — commission highlight box with the share link inside */
+.ref-commission-box {
+  background: linear-gradient(135deg, rgba(184,241,53,.16), rgba(184,241,53,.04));
+  border: 1px solid rgba(184,241,53,.45);
+  border-radius: 16px;
+  padding: 14px;
+  margin: 4px 0 14px;
+}
+.ref-commission-top { display: flex; gap: 14px; align-items: center; }
+.ref-commission-pct {
+  font-family: var(--font-display); font-weight: 900; font-size: 42px; line-height: 1;
+  color: var(--volt); flex: none; min-width: 86px; text-align: center;
+}
+.ref-commission-text b { display: block; font-size: 15px; margin-bottom: 3px; }
+.ref-commission-text span { display: block; font-size: 13px; color: var(--muted); line-height: 1.5; }
+.ref-commission-link {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  margin-top: 12px; padding-top: 12px; border-top: 1px dashed rgba(184,241,53,.35);
+}
+.ref-commission-link .mono { font-size: 12.5px; flex: 1 1 160px; }
+@media (max-width: 520px) {
+  .ref-commission-pct { font-size: 34px; min-width: 70px; }
+}
 .mono { font-family: ui-monospace, monospace; word-break: break-all; }
 
 /* ---------- floating widgets ---------- */

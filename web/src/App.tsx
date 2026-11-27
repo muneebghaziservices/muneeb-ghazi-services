@@ -421,17 +421,21 @@ function AuthSheet({ initialMode, onDone, onClose }: {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [referralCode, setReferralCode] = useState('');
+  // True when signup was opened via a ?ref=CODE link — the code is then locked.
+  const [refLocked, setRefLocked] = useState(false);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
-  // A referral link (?ref=CODE) prefills the signup referral-code field.
+  // A referral link (?ref=CODE) prefills the signup referral-code field and locks it,
+  // so the referrer is guaranteed the signup. Without ?ref= the field stays optional
+  // and editable.
   useEffect(() => {
-    if (initialMode !== 'signup') return;
+    if (mode !== 'signup') return;
     try {
       const ref = new URLSearchParams(window.location.search).get('ref');
-      if (ref) setReferralCode(ref.trim().toUpperCase());
+      if (ref) { setReferralCode(ref.trim().toUpperCase()); setRefLocked(true); }
     } catch { /* ignore */ }
-  }, [initialMode]);
+  }, [mode]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -476,8 +480,10 @@ function AuthSheet({ initialMode, onDone, onClose }: {
             </div>
           </label>
           {mode === 'signup' && (
-            <label className="field"><span>Referral code (optional)</span>
-              <input className="input" value={referralCode} onChange={(e) => setReferralCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))} placeholder="e.g. MUNE1234" autoComplete="off" />
+            <label className="field"><span>{refLocked ? 'Referral code 🔒 Locked' : 'Referral code (optional)'}</span>
+              <input className="input" value={referralCode} disabled={refLocked}
+                onChange={(e) => setReferralCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))} placeholder="e.g. MUNE1234" autoComplete="off" />
+              {refLocked && <span className="hint" style={{ display: 'block', marginTop: 6 }}>Locked — you joined through a referral link, so this code can't be changed.</span>}
             </label>
           )}
           <p className="hint">Keep your password safe — it is the only way back into your account. There is no password reset.</p>
@@ -802,22 +808,31 @@ function ReferralPanel({ profile, toast, onRefresh }: {
       <h3>Refer &amp; Earn</h3>
       <p style={{ color: 'var(--muted)', fontSize: 14 }}>
         Share your link — when someone joins with your code and adds funds or places an order,
-        you earn {info ? `${info.commissionPercent}%` : 'a commission'} of it in your wallet.
+        you earn a share of it in your wallet.
       </p>
       {err && <p className="error">{err}</p>}
       {!info && !err && <p style={{ color: 'var(--muted)' }}>Loading…</p>}
       {info && (
         <>
+          <div className="ref-commission-box">
+            <div className="ref-commission-top">
+              <div className="ref-commission-pct">{info.commissionPercent}%</div>
+              <div className="ref-commission-text">
+                <b>You earn {info.commissionPercent}% on every referral</b>
+                <span>When someone joins with your code and adds funds or places an order, {info.commissionPercent}% of it goes straight to your wallet.</span>
+              </div>
+            </div>
+            {info.referralLink && (
+              <div className="ref-commission-link">
+                <span className="mono">{info.referralLink}</span>
+                <button type="button" className="btn btn-sm btn-primary" onClick={async () => { await copyText(info.referralLink); toast('Referral link copied.'); }}>Copy link</button>
+                <a className="btn btn-sm" href={`https://wa.me/?text=${encodeURIComponent(waText)}`} target="_blank" rel="noreferrer">Share on WhatsApp</a>
+              </div>
+            )}
+          </div>
           <div className="meta-line">Your referral code: <b>{info.referralCode || '—'}</b></div>
           <div className="meta-line">People joined via your code: <b>{info.referredCount}</b></div>
           <div className="meta-line">Total earned: <b>{fmtRs(info.totalEarnedPaisa)}</b></div>
-          {info.referralLink && (
-            <div className="copy-row" style={{ marginTop: 10 }}>
-              <span className="mono" style={{ wordBreak: 'break-all' }}>{info.referralLink}</span>
-              <button type="button" className="btn btn-sm" onClick={async () => { await copyText(info.referralLink); toast('Referral link copied.'); }}>Copy link</button>
-              <a className="btn btn-sm" href={`https://wa.me/?text=${encodeURIComponent(waText)}`} target="_blank" rel="noreferrer">Share on WhatsApp</a>
-            </div>
-          )}
           {info.referredUsers.length > 0 && (
             <div style={{ marginTop: 14 }}>
               <b>Joined via your code</b>
