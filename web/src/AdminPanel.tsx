@@ -63,30 +63,78 @@ const EMPTY_SERVICE: Service = {
   description: '', pricePaisa: 24500, unit: '1,000', minQty: 1, active: true,
 };
 
+type Section = { platform: string; category: string };
+
+const PLATFORMS = ['TikTok', 'Instagram', 'Facebook', 'YouTube'];
+const NEW_CATEGORY_VALUE = '__new__';
+
 function ServicesTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
   const [list, setList] = useState<Service[]>([]);
+  const [sections, setSections] = useState<Section[]>([]);
   const [editing, setEditing] = useState<Service | null>(null);
+  const [categoryIsNew, setCategoryIsNew] = useState(false);
+  const [newCategory, setNewCategory] = useState('');
+  const [showSectionForm, setShowSectionForm] = useState(false);
+  const [newSection, setNewSection] = useState({ platform: 'TikTok', category: '' });
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+
+  const loadSections = useCallback(async () => {
+    try {
+      const d = await api<{ sections?: unknown[] }>('listSections');
+      setSections(((d.sections ?? []) as Record<string, unknown>[]).map((s) => ({
+        platform: String(s.platform ?? ''), category: String(s.category ?? ''),
+      })).filter((s) => s.platform && s.category));
+    } catch { /* sections fall back to the categories already on services */ }
+  }, []);
 
   const load = useCallback(async () => {
     try {
       const d = await api<{ services?: unknown[] }>('adminListServices');
       setList(((d.services ?? []) as Record<string, unknown>[]).map(normService));
     } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load services.'); }
-  }, []);
+    void loadSections();
+  }, [loadSections]);
   useEffect(() => { void load(); }, [load]);
+
+  function startEdit(s: Service) {
+    setEditing({ ...s });
+    setCategoryIsNew(false);
+    setNewCategory('');
+    setErr('');
+  }
+
+  async function saveSection(e: React.FormEvent) {
+    e.preventDefault();
+    const name = newSection.category.trim();
+    if (!name) { setErr('Section name is required.'); return; }
+    setBusy(true); setErr('');
+    try {
+      await api('addSection', { platform: newSection.platform, category: name });
+      toast(`Section added: ${newSection.platform} · ${name} — now add a service in it.`);
+      setNewSection({ platform: 'TikTok', category: '' });
+      setShowSectionForm(false);
+      void loadSections();
+    } catch (e2) { setErr(e2 instanceof Error ? e2.message : 'Could not add section.'); } finally { setBusy(false); }
+  }
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
     if (!editing) return;
     if (!editing.title.trim()) { setErr('Title is required.'); return; }
+    const category = categoryIsNew ? newCategory.trim() : editing.category.trim();
+    if (!category) { setErr('Category is required.'); return; }
     setBusy(true); setErr('');
     try {
+      if (categoryIsNew) {
+        // Persist the new section so it stays available for later services.
+        try { await api('addSection', { platform: editing.platform, category }); } catch { /* already exists — fine */ }
+        void loadSections();
+      }
       await api('saveService', {
         service: {
           ...(editing.id ? { id: editing.id } : {}),
-          platform: editing.platform, category: editing.category,
+          platform: editing.platform, category,
           title: editing.title.trim(), description: editing.description,
           price_paisa: editing.pricePaisa, unit: editing.unit,
           min_qty: editing.minQty, active: editing.active,
@@ -94,6 +142,8 @@ function ServicesTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
       });
       toast('Service saved.');
       setEditing(null);
+      setCategoryIsNew(false);
+      setNewCategory('');
       void load();
     } catch (e2) { setErr(e2 instanceof Error ? e2.message : 'Save failed.'); } finally { setBusy(false); }
   }
@@ -107,21 +157,61 @@ function ServicesTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
   return (
     <div className="panel">
       <h3>Services ({list.length})</h3>
-      <button type="button" className="btn btn-primary" onClick={() => setEditing({ ...EMPTY_SERVICE })}>+ Add service</button>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button type="button" className="btn btn-primary" onClick={() => startEdit({ ...EMPTY_SERVICE })}>+ Add service</button>
+        <button type="button" className="btn" onClick={() => { setShowSectionForm((v) => !v); setErr(''); }}>+ Add section</button>
+      </div>
+      {sections.length > 0 && (
+        <p className="meta-line" style={{ marginTop: 10 }}>
+          Sections: {sections.map((s) => `${s.platform} · ${s.category}`).join('  |  ')}
+        </p>
+      )}
+      {showSectionForm && (
+        <form onSubmit={saveSection} style={{ marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
+          <h4 style={{ margin: '0 0 10px' }}>New section</h4>
+          <div className="inline-form">
+            <label className="field"><span>Platform</span>
+              <select className="select" value={newSection.platform} onChange={(e) => setNewSection({ ...newSection, platform: e.target.value })}>
+                {PLATFORMS.map((p) => <option key={p}>{p}</option>)}
+              </select>
+            </label>
+            <label className="field"><span>Section name</span>
+              <input className="input" value={newSection.category} onChange={(e) => setNewSection({ ...newSection, category: e.target.value })} placeholder="e.g. Subscriptions" />
+            </label>
+          </div>
+          <p className="hint">The section becomes available as a category when adding a service, and shows as its own group in the shop once it has a service.</p>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save section'}</button>
+            <button type="button" className="btn" onClick={() => setShowSectionForm(false)}>Cancel</button>
+          </div>
+        </form>
+      )}
       {err && <p className="error">{err}</p>}
       {editing && (
         <form onSubmit={save} style={{ marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
           <div className="inline-form">
             <label className="field"><span>Platform</span>
               <select className="select" value={editing.platform} onChange={(e) => setEditing({ ...editing, platform: e.target.value })}>
-                {['TikTok', 'Instagram', 'Facebook', 'YouTube'].map((p) => <option key={p}>{p}</option>)}
+                {PLATFORMS.map((p) => <option key={p}>{p}</option>)}
               </select>
             </label>
-            <label className="field"><span>Category</span>
-              <select className="select" value={editing.category} onChange={(e) => setEditing({ ...editing, category: e.target.value })}>
-                {['For Likes and Views', 'For Followers', '1k Followers Deals'].map((c) => <option key={c}>{c}</option>)}
+            <label className="field"><span>Category (section)</span>
+              <select className="select" value={categoryIsNew ? NEW_CATEGORY_VALUE : editing.category} onChange={(e) => {
+                if (e.target.value === NEW_CATEGORY_VALUE) { setCategoryIsNew(true); }
+                else { setCategoryIsNew(false); setEditing({ ...editing, category: e.target.value }); }
+              }}>
+                {Array.from(new Set([
+                  ...sections.filter((s) => s.platform === editing.platform).map((s) => s.category),
+                  editing.category,
+                ].filter(Boolean))).map((c) => <option key={c} value={c}>{c}</option>)}
+                <option value={NEW_CATEGORY_VALUE}>＋ New section…</option>
               </select>
             </label>
+            {categoryIsNew && (
+              <label className="field"><span>New section name</span>
+                <input className="input" value={newCategory} onChange={(e) => setNewCategory(e.target.value)} placeholder="e.g. Subscriptions" />
+              </label>
+            )}
             <label className="field full"><span>Title</span>
               <input className="input" value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} placeholder="e.g. Video on For You — 1,200 Views" />
             </label>
@@ -161,7 +251,7 @@ function ServicesTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
             </div>
             <div className="meta-line">{s.platform} · {s.category} · Unit {s.unit} · Min {s.minQty} · {s.active ? 'Active' : 'Hidden'}</div>
             <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-              <button type="button" className="btn btn-sm" onClick={() => setEditing(s)}>Edit</button>
+              <button type="button" className="btn btn-sm" onClick={() => startEdit(s)}>Edit</button>
               <button type="button" className="btn btn-danger btn-sm" onClick={() => remove(s.id)}>Delete</button>
             </div>
           </div>

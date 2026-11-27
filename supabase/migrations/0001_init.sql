@@ -130,3 +130,10 @@ alter table public.fund_requests enable row level security;
 alter table public.conversations enable row level security;
 alter table public.messages enable row level security;
 alter table public.settings enable row level security;
+
+-- ------------------------------------------------------------------- grants
+-- RLS bypass alone does NOT grant table access: without these GRANTs the
+-- service_role key gets 42501 "permission denied for table ..." on every
+-- query. Anon/authenticated deliberately get nothing.
+grant select, insert, update, delete on all tables in schema public to service_role;
+alter default privileges in schema public grant select, insert, update, delete on tables to service_role;

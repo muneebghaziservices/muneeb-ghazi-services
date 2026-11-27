@@ -293,7 +293,10 @@ export default function App() {
       )}
 
       {/* Support chat bubble — bottom-left */}
-      <button type="button" className="chat-bubble" aria-label="Support chat" onClick={() => setChatOpen((o) => !o)}>💬</button>
+      <div className="chat-bubble-wrap">
+        <button type="button" className="chat-bubble" aria-label="Support chat" onClick={() => setChatOpen((o) => !o)}>💬</button>
+        <span className="chat-bubble-label" role="button" aria-label="Live Chat Support — open support chat" onClick={() => setChatOpen((o) => !o)}>Live Chat Support</span>
+      </div>
       {chatOpen && (
         <ChatPanel profile={profile} toast={toast} onClose={() => setChatOpen(false)} onNeedAuth={() => setAuthOpen(true)} />
       )}
@@ -511,6 +514,7 @@ function AddFundsSheet({ methods, toast, onClose, onDone }: {
     if (!method) { setErr('No payment method is available right now.'); return; }
     if (!Number.isFinite(rs) || rs < 10) { setErr('Minimum amount is Rs 10.'); return; }
     if (!senderName.trim()) { setErr('Sender account name is required.'); return; }
+    if (!proof) { setErr('Payment screenshot is required.'); return; }
     setBusy(true);
     try {
       await api('requestFunds', {
@@ -560,7 +564,7 @@ function AddFundsSheet({ methods, toast, onClose, onDone }: {
           <label className="field"><span>Sender account name *</span>
             <input className="input" value={senderName} onChange={(e) => setSenderName(e.target.value)} placeholder="Name on the account you paid from" />
           </label>
-          <label className="field"><span>Payment screenshot (optional)</span>
+          <label className="field"><span>Payment screenshot *</span>
             <input className="input" type="file" accept="image/*" onChange={async (e) => {
               const f = e.target.files?.[0];
               if (!f) return;

@@ -316,6 +316,81 @@ async function deleteService(p: Params, token: string | null) {
   return { deleted: true };
 }
 
+// ------------------------------------------------------------------ sections
+// A "section" is a (platform, category) pair the admin creates so a new
+// group (e.g. Instagram · Subscriptions) can be offered when adding a
+// service. Sections that already have services are derived from the
+// services table; sections with no services yet are kept in the settings
+// table under key 'custom_sections'. The storefront groups services by
+// platform · category, so a new section appears there as its own group
+// once it has at least one service.
+
+const CUSTOM_SECTIONS_KEY = 'custom_sections';
+const PLATFORMS = ['TikTok', 'Instagram', 'Facebook', 'YouTube'];
+
+type Section = { platform: string; category: string };
+
+async function readCustomSections(): Promise<Section[]> {
+  const { data, error } = await db()
+    .from('settings')
+    .select('value')
+    .eq('key', CUSTOM_SECTIONS_KEY)
+    .maybeSingle();
+  if (error || !data) return [];
+  const v = (data as { value?: unknown }).value;
+  if (!Array.isArray(v)) return [];
+  return v
+    .filter((s: unknown): s is Section =>
+      Boolean(s) && typeof (s as Section).platform === 'string' && typeof (s as Section).category === 'string')
+    .map((s) => ({ platform: s.platform, category: s.category }));
+}
+
+async function listSections(_p: Params, token: string | null) {
+  const me = await requireAuth(token);
+  requirePerm(me, 'services');
+  const [{ data: services, error }, custom] = await Promise.all([
+    db().from('services').select('platform, category'),
+    readCustomSections(),
+  ]);
+  if (error) throw new Error(error.message);
+  const seen = new Set<string>();
+  const sections: Section[] = [];
+  const push = (platform: string, category: string) => {
+    const k = `${platform} ${category}`;
+    if (!seen.has(k)) {
+      seen.add(k);
+      sections.push({ platform, category });
+    }
+  };
+  (services ?? []).forEach((s: { platform: string; category: string }) =>
+    push(String(s.platform), String(s.category)));
+  custom.forEach((s) => push(s.platform, s.category));
+  return { sections };
+}
+
+async function addSection(p: Params, token: string | null) {
+  const me = await requireAuth(token);
+  requirePerm(me, 'services');
+  const platform = String(p.platform || '').trim();
+  const category = String(p.category || '').trim();
+  if (!PLATFORMS.includes(platform)) {
+    throw new Error('Choose a platform: TikTok, Instagram, Facebook or YouTube');
+  }
+  if (!category || category.length > 80) {
+    throw new Error('Section name is required (max 80 characters)');
+  }
+  const custom = await readCustomSections();
+  if (custom.some((s) => s.platform === platform && s.category.toLowerCase() === category.toLowerCase())) {
+    throw new Error('That section already exists');
+  }
+  const next = [...custom, { platform, category }];
+  const { error } = await db()
+    .from('settings')
+    .upsert({ key: CUSTOM_SECTIONS_KEY, value: next });
+  if (error) throw new Error(error.message);
+  return { section: { platform, category } };
+}
+
 // ------------------------------------------------------------------- orders
 
 async function placeOrder(p: Params, token: string | null) {
@@ -434,6 +509,9 @@ async function requestFunds(p: Params, token: string | null) {
   const amount = Number(p.amountPaisa);
   if (!Number.isInteger(amount) || amount < 1000) {
     throw new Error('Minimum add-funds amount is Rs 10');
+  }
+  if (!p.proofBase64) {
+    throw new Error('Payment screenshot is required');
   }
   const { data: method, error } = await db()
     .from('payment_methods')
@@ -781,6 +859,8 @@ const ACTIONS: Record<string, (p: Params, token: string | null) => Promise<unkno
   adminListServices,
   saveService,
   deleteService,
+  listSections,
+  addSection,
   placeOrder,
   cancelOrder,
   listOrders,
