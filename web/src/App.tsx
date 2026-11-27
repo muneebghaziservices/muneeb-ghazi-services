@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import './index.css';
 import {
   api, copyText, fileToBase64, fmtRs, getToken, normConversation, normFund,
@@ -11,11 +12,24 @@ import AdminPanel from './AdminPanel';
 
 const PLATFORMS = ['All', 'TikTok', 'Instagram', 'Facebook', 'YouTube'] as const;
 type Platform = (typeof PLATFORMS)[number];
-const PLATFORM_LABEL: Record<Platform, string> = {
+/* Real brand marks as inline SVG (currentColor) — Facebook "f" and the Instagram camera outline. */
+const FB_ICON = (
+  <svg className="picon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">
+    <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
+  </svg>
+);
+const IG_ICON = (
+  <svg className="picon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+    <rect x="2.5" y="2.5" width="19" height="19" rx="5.5" />
+    <circle cx="12" cy="12" r="4.2" />
+    <circle cx="17.4" cy="6.6" r="1.1" fill="currentColor" stroke="none" />
+  </svg>
+);
+const PLATFORM_LABEL: Record<Platform, ReactNode> = {
   All: '🔥 All platforms',
   TikTok: '♪ TikTok',
-  Instagram: '◉ Instagram',
-  Facebook: '👍 Facebook',
+  Instagram: <>{IG_ICON} Instagram</>,
+  Facebook: <>{FB_ICON} Facebook</>,
   YouTube: '▶ YouTube',
 };
 const TICKER_ITEMS = [
@@ -226,9 +240,9 @@ export default function App() {
                 <button type="button" className="hero-mini-pill" onClick={() => setChatOpen(true)}>💬 Live support chat</button>
               </div>
               <span className="hero-chip hero-chip-tiktok" aria-hidden="true">♪ TikTok</span>
-              <span className="hero-chip hero-chip-ig" aria-hidden="true">◉ Instagram</span>
+              <span className="hero-chip hero-chip-ig" aria-hidden="true">{IG_ICON} Instagram</span>
               <span className="hero-chip hero-chip-yt" aria-hidden="true">▶ YouTube</span>
-              <span className="hero-chip hero-chip-fb" aria-hidden="true">👍 Facebook</span>
+              <span className="hero-chip hero-chip-fb" aria-hidden="true">{FB_ICON} Facebook</span>
             </div>
           </section>
 

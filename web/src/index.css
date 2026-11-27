@@ -144,6 +144,9 @@ button.hero-mini-pill:hover { border-color: var(--volt); }
 .hero-chip-ig { background: #f472b6; top: 42%; right: 64px; transform: rotate(-4deg); }
 .hero-chip-yt { background: #ef4444; color: #fff; bottom: 30px; right: 34px; transform: rotate(2deg); }
 .hero-chip-fb { background: #60a5fa; bottom: -14px; left: 28px; transform: rotate(-3deg); }
+/* brand-mark icons inside chips and filter pills */
+.picon { width: 14px; height: 14px; flex: 0 0 auto; display: block; }
+.chip .picon { width: 13px; height: 13px; }
 
 /* scrolling ticker */
 .ticker {
@@ -429,7 +432,17 @@ button.hero-mini-pill:hover { border-color: var(--volt); }
 .admin-float:hover { border-color: var(--volt); }
 
 @media (max-width: 720px) {
-  .hero-chip { display: none; }
+  /* Hero chips stay visible on phones: the headline/sub/buttons run full-width,
+     so the chips move to the hero's empty bottom edge — two rows that never
+     cover any content. Row A sits in extra bottom padding inside the card;
+     row B hangs off the bottom edge, exactly like Facebook does on desktop. */
+  .hero-card { padding-bottom: 66px; }
+  .hero-chip { font-size: 11px; padding: 6px 11px; gap: 4px; }
+  .hero-chip .picon { width: 12px; height: 12px; }
+  .hero-chip-tiktok { top: auto; right: 12px; bottom: 36px; transform: rotate(2deg); }
+  .hero-chip-ig { top: auto; right: auto; left: 12px; bottom: 36px; transform: rotate(-3deg); }
+  .hero-chip-yt { bottom: -12px; right: 12px; transform: rotate(2deg); }
+  .hero-chip-fb { bottom: -12px; left: 12px; transform: rotate(-3deg); }
   .quick-cards { grid-template-columns: 1fr; }
 }
 
