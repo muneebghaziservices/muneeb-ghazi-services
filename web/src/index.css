@@ -456,17 +456,21 @@ button.hero-mini-pill:hover { border-color: var(--volt); }
 .admin-float:hover { border-color: var(--volt); }
 
 @media (max-width: 720px) {
-  /* Hero chips stay visible on phones: the headline/sub/buttons run full-width,
-     so the chips move to the hero's empty bottom edge — two rows that never
-     cover any content. Row A sits in extra bottom padding inside the card;
-     row B hangs off the bottom edge, exactly like Facebook does on desktop. */
-  .hero-card { padding-bottom: 66px; }
+  /* Hero chips float on phones exactly like the artifact: a vertical stack on
+     the right side of the hero card — TikTok top, Instagram middle, YouTube
+     bottom, Facebook hanging off the bottom-left edge. The headline, subtext
+     and mini-buttons get a narrower text column so the chips never cover them;
+     TikTok hangs off the top edge so it can never collide with the live pill. */
+  .hero-title { font-size: clamp(32px, 8vw, 44px); max-width: calc(100% - 112px); }
+  .hero-sub { font-size: 15px; max-width: calc(100% - 112px); }
+  .hero-mini { max-width: calc(100% - 112px); }
+  .live-pill { font-size: 10px; letter-spacing: 1px; padding: 5px 10px; }
   .hero-chip { font-size: 11px; padding: 6px 11px; gap: 4px; }
   .hero-chip .picon { width: 12px; height: 12px; }
-  .hero-chip-tiktok { top: auto; right: 12px; bottom: 36px; transform: rotate(2deg); }
-  .hero-chip-ig { top: auto; right: auto; left: 12px; bottom: 36px; transform: rotate(-3deg); }
-  .hero-chip-yt { bottom: -12px; right: 12px; transform: rotate(2deg); }
-  .hero-chip-fb { bottom: -12px; left: 12px; transform: rotate(-3deg); }
+  .hero-chip-tiktok { top: -10px; right: 10px; bottom: auto; left: auto; transform: rotate(3deg); }
+  .hero-chip-ig { top: 42%; right: 22px; bottom: auto; left: auto; transform: rotate(-4deg); }
+  .hero-chip-yt { bottom: 26px; right: 12px; top: auto; left: auto; transform: rotate(2deg); }
+  .hero-chip-fb { bottom: -12px; left: 12px; right: auto; top: auto; transform: rotate(-3deg); }
   .quick-cards { grid-template-columns: 1fr; }
 }
 
@@ -476,4 +480,16 @@ button.hero-mini-pill:hover { border-color: var(--volt); }
   .stats { gap: 8px; }
   .stat { padding: 12px 6px; }
   .hero { padding-top: 18px; }
+}
+
+@media (max-width: 360px) {
+  /* Narrowest phones: smaller chips and headline so the right-side stack stays
+     readable and the headline never reaches the chips. */
+  .hero-title { font-size: 26px; max-width: calc(100% - 100px); }
+  .hero-sub { max-width: calc(100% - 100px); }
+  .hero-mini { max-width: calc(100% - 100px); }
+  .live-pill { font-size: 9px; letter-spacing: .6px; padding: 5px 9px; }
+  .hero-chip { font-size: 10px; padding: 5px 9px; }
+  .hero-chip .picon { width: 11px; height: 11px; }
+  .hero-chip-ig { right: 14px; }
 }
