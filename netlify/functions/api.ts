@@ -51,24 +51,35 @@ const fail = (error: string, statusCode = 400) => ({
 
 // ------------------------------------------------------------------- auth
 
-// PINs are stored as "salt:hash" hex, scrypt with per-user random salt.
-function hashPin(pin: string): string {
+// Passwords are stored as "salt:hash" hex, scrypt with per-user random salt.
+// NOTE: the column is still named pin_hash and existing hashes are NEVER
+// reset or changed — an account's old PIN secret simply BECOMES its
+// password, so nobody is locked out by the PIN -> password switch.
+function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16).toString('hex');
-  const hash = crypto.scryptSync(pin, salt, 64).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
   return `${salt}:${hash}`;
 }
 
-function verifyPin(pin: string, stored: string): boolean {
+function verifyPassword(password: string, stored: string): boolean {
   const [salt, hash] = stored.split(':');
   if (!salt || !hash) return false;
-  const candidate = crypto.scryptSync(pin, salt, 64).toString('hex');
+  const candidate = crypto.scryptSync(password, salt, 64).toString('hex');
   const a = Buffer.from(candidate, 'hex');
   const b = Buffer.from(hash, 'hex');
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-function isValidPin(pin: unknown): pin is string {
-  return typeof pin === 'string' && /^\d{4,6}$/.test(pin);
+function isValidPassword(password: unknown): password is string {
+  return typeof password === 'string' && password.length >= 6;
+}
+
+// Accept `password`, falling back to the legacy `pin` field so old clients
+// keep working. Prefer `password` when both are present.
+function extractPassword(p: Params): unknown {
+  const pw = p.password;
+  if (typeof pw === 'string' && pw !== '') return pw;
+  return p.pin;
 }
 
 type Profile = {
@@ -80,6 +91,8 @@ type Profile = {
   balance_paisa: number;
   total_spent_paisa: number;
   total_orders: number;
+  referral_code?: string;
+  referred_by?: string | null;
   created_at: string;
 };
 
@@ -141,6 +154,42 @@ function orderCode(): string {
   return code;
 }
 
+// Referral codes are 8 chars: first 4 alphanumerics of the display name
+// (uppercased, padded with random letters when the name is short) + 4
+// random alphanumerics. Uniqueness is enforced by checking the profiles
+// table and retrying on collision.
+const REFERRAL_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+function referralCodeForName(name: string): string {
+  const clean = name.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  let prefix = clean.slice(0, 4);
+  while (prefix.length < 4) {
+    prefix += REFERRAL_ALPHABET[crypto.randomInt(REFERRAL_ALPHABET.length)];
+  }
+  let suffix = '';
+  for (let i = 0; i < 4; i++) {
+    suffix += REFERRAL_ALPHABET[crypto.randomInt(REFERRAL_ALPHABET.length)];
+  }
+  return prefix + suffix;
+}
+
+async function generateUniqueReferralCode(name: string): Promise<string> {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const code = referralCodeForName(name);
+    const { data } = await db()
+      .from('profiles')
+      .select('id')
+      .eq('referral_code', code)
+      .maybeSingle();
+    if (!data) return code;
+  }
+  // Extremely unlikely fallback: a fully random code.
+  let code = '';
+  for (let i = 0; i < 8; i++) {
+    code += REFERRAL_ALPHABET[crypto.randomInt(REFERRAL_ALPHABET.length)];
+  }
+  return code;
+}
+
 function parseDataUrl(dataUrl: string): { mime: string; buffer: Buffer } | null {
   const m = /^data:([a-zA-Z0-9/+.-]+);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl.trim());
   if (!m) return null;
@@ -185,10 +234,14 @@ function requireFields(params: Record<string, unknown>, fields: string[]): void 
 type Params = Record<string, any>;
 
 async function signup(p: Params) {
-  requireFields(p, ['name', 'pin']);
+  requireFields(p, ['name']);
+  const password = extractPassword(p);
+  if (password === undefined || password === null || (typeof password === 'string' && password.trim() === '')) {
+    throw new Error('Missing field: password');
+  }
   const name = String(p.name).trim();
   if (name.length < 2 || name.length > 60) throw new Error('Name must be 2–60 characters');
-  if (!isValidPin(p.pin)) throw new Error('PIN must be 4–6 digits');
+  if (!isValidPassword(password)) throw new Error('Password must be at least 6 characters');
 
   const { data: existing } = await db()
     .from('profiles')
@@ -196,6 +249,21 @@ async function signup(p: Params) {
     .eq('display_name', name)
     .maybeSingle();
   if (existing) throw new Error('That name is already taken');
+
+  // Optional referral code: a valid code links the new account to its
+  // referrer; an invalid code blocks signup.
+  let referredBy: string | null = null;
+  const referralInput = p.referralCode ?? p.referral_code;
+  if (typeof referralInput === 'string' && referralInput.trim() !== '') {
+    const code = referralInput.trim().toUpperCase();
+    const { data: referrer } = await db()
+      .from('profiles')
+      .select('id')
+      .eq('referral_code', code)
+      .maybeSingle();
+    if (!referrer) throw new Error('Invalid referral code');
+    referredBy = (referrer as { id: string }).id;
+  }
 
   // SECURITY (admin lock): signup NEVER creates an admin. Every new
   // account is a customer with no permissions. The owner's admin account
@@ -207,9 +275,11 @@ async function signup(p: Params) {
     .from('profiles')
     .insert({
       display_name: name,
-      pin_hash: hashPin(p.pin),
+      pin_hash: hashPassword(String(password)),
       role: 'customer',
       permissions: {},
+      referral_code: await generateUniqueReferralCode(name),
+      referred_by: referredBy,
     })
     .select('*')
     .single();
@@ -220,18 +290,38 @@ async function signup(p: Params) {
 }
 
 async function signin(p: Params) {
-  requireFields(p, ['name', 'pin']);
+  requireFields(p, ['name']);
+  const password = extractPassword(p);
+  if (password === undefined || password === null || (typeof password === 'string' && password.trim() === '')) {
+    throw new Error('Missing field: password');
+  }
   const { data: profile, error } = await db()
     .from('profiles')
     .select('*')
     .eq('display_name', String(p.name).trim())
     .maybeSingle();
-  if (error || !profile) throw new Error('Wrong name or PIN');
-  if (!verifyPin(String(p.pin), (profile as Profile).pin_hash || '')) {
-    throw new Error('Wrong name or PIN');
+  if (error || !profile) throw new Error('Wrong name or password');
+  if (!verifyPassword(String(password), (profile as Profile).pin_hash || '')) {
+    throw new Error('Wrong name or password');
   }
   const token = await createSession(profile.id);
   return { profile: publicProfile(profile as Profile), token };
+}
+
+async function changePassword(p: Params, token: string | null) {
+  const me = await requireAuth(token);
+  const current = typeof p.currentPassword === 'string' ? p.currentPassword : p.currentPin;
+  const next = typeof p.newPassword === 'string' ? p.newPassword : p.newPin;
+  if (typeof current !== 'string' || current === '') throw new Error('Missing field: currentPassword');
+  if (typeof next !== 'string' || next === '') throw new Error('Missing field: newPassword');
+  if (!verifyPassword(current, me.pin_hash || '')) throw new Error('Current password is wrong');
+  if (!isValidPassword(next)) throw new Error('New password must be at least 6 characters');
+  const { error } = await db()
+    .from('profiles')
+    .update({ pin_hash: hashPassword(next) })
+    .eq('id', me.id);
+  if (error) throw new Error(error.message);
+  return { changed: true };
 }
 
 async function getme(p: Params, token: string | null) {
@@ -248,9 +338,10 @@ async function getme(p: Params, token: string | null) {
 }
 
 async function bootstrap() {
-  const [services, methods] = await Promise.all([
+  const [services, methods, showServiceCards] = await Promise.all([
     db().from('services').select('*').eq('active', true).order('sort_order', { ascending: true }),
     db().from('payment_methods').select('*').eq('active', true).order('created_at', { ascending: true }),
+    readShowServiceCards(),
   ]);
   const listedMethods = (methods.data ?? []).map((m: any) => ({
     ...m,
@@ -263,6 +354,8 @@ async function bootstrap() {
     // Returned under both keys: the frontend reads `methods`.
     paymentMethods: listedMethods,
     methods: listedMethods,
+    // Service-cards grid toggle (admin setting, default OFF).
+    showServiceCards,
   };
 }
 
@@ -328,19 +421,149 @@ const PLATFORMS = ['TikTok', 'Instagram', 'Facebook', 'YouTube'];
 
 type Section = { platform: string; category: string };
 
-async function readCustomSections(): Promise<Section[]> {
+// Generic settings-table access (key text PK, value jsonb). Reads take the
+// last matching row: the real DB has one row per key, and this also stays
+// correct if a store ever appends instead of upserting.
+async function readSetting(key: string): Promise<unknown> {
   const { data, error } = await db()
     .from('settings')
     .select('value')
-    .eq('key', CUSTOM_SECTIONS_KEY)
-    .maybeSingle();
-  if (error || !data) return [];
-  const v = (data as { value?: unknown }).value;
+    .eq('key', key);
+  if (error || !data || data.length === 0) return undefined;
+  return (data[data.length - 1] as { value?: unknown }).value;
+}
+
+async function writeSetting(key: string, value: unknown): Promise<void> {
+  const { error } = await db()
+    .from('settings')
+    .upsert({ key, value });
+  if (error) throw new Error(error.message);
+}
+
+async function readCustomSections(): Promise<Section[]> {
+  const v = await readSetting(CUSTOM_SECTIONS_KEY);
   if (!Array.isArray(v)) return [];
   return v
     .filter((s: unknown): s is Section =>
       Boolean(s) && typeof (s as Section).platform === 'string' && typeof (s as Section).category === 'string')
     .map((s) => ({ platform: s.platform, category: s.category }));
+}
+
+// ------------------------------------------------------- referral settings
+// Stored in the settings table under key 'referral':
+//   { commissionPercent: number (0–100), minWithdrawalRs: number }
+// Defaults: 5% commission, Rs 500 minimum withdrawal.
+
+const REFERRAL_SETTINGS_KEY = 'referral';
+const DEFAULT_REFERRAL_SETTINGS = { commissionPercent: 5, minWithdrawalRs: 500 };
+
+type ReferralSettings = { commissionPercent: number; minWithdrawalRs: number };
+
+async function readReferralSettings(): Promise<ReferralSettings> {
+  const v = await readSetting(REFERRAL_SETTINGS_KEY);
+  if (!v || typeof v !== 'object') return { ...DEFAULT_REFERRAL_SETTINGS };
+  const o = v as Record<string, unknown>;
+  const commissionPercent = Number(o.commissionPercent);
+  const minWithdrawalRs = Number(o.minWithdrawalRs);
+  return {
+    commissionPercent: Number.isFinite(commissionPercent)
+      ? Math.min(100, Math.max(0, commissionPercent))
+      : DEFAULT_REFERRAL_SETTINGS.commissionPercent,
+    minWithdrawalRs: Number.isFinite(minWithdrawalRs)
+      ? Math.max(0, Math.floor(minWithdrawalRs))
+      : DEFAULT_REFERRAL_SETTINGS.minWithdrawalRs,
+  };
+}
+
+async function getReferralSettings(_p: Params, token: string | null) {
+  const me = await requireAuth(token);
+  requireAdmin(me);
+  return { settings: await readReferralSettings() };
+}
+
+async function saveReferralSettings(p: Params, token: string | null) {
+  const me = await requireAuth(token);
+  requireAdmin(me);
+  const commissionPercent = Number(p.commissionPercent);
+  const minWithdrawalRs = Number(p.minWithdrawalRs);
+  if (!Number.isFinite(commissionPercent) || commissionPercent < 0 || commissionPercent > 100) {
+    throw new Error('Commission percent must be 0–100');
+  }
+  if (!Number.isInteger(minWithdrawalRs) || minWithdrawalRs < 0) {
+    throw new Error('Minimum withdrawal must be a whole number of Rs (0 or more)');
+  }
+  const settings: ReferralSettings = { commissionPercent, minWithdrawalRs };
+  await writeSetting(REFERRAL_SETTINGS_KEY, settings);
+  return { settings };
+}
+
+// ---------------------------------------------------- show service cards flag
+// Stored in the settings table under key 'show_service_cards' (boolean).
+// Default OFF: the storefront shows only the services dropdown.
+
+const SHOW_SERVICE_CARDS_KEY = 'show_service_cards';
+
+async function readShowServiceCards(): Promise<boolean> {
+  const v = await readSetting(SHOW_SERVICE_CARDS_KEY);
+  if (typeof v === 'boolean') return v;
+  if (v && typeof v === 'object') return Boolean((v as Record<string, unknown>).show);
+  return false;
+}
+
+async function getShowServiceCards(_p: Params, token: string | null) {
+  const me = await requireAuth(token);
+  requireAdmin(me);
+  return { showServiceCards: await readShowServiceCards() };
+}
+
+async function saveShowServiceCards(p: Params, token: string | null) {
+  const me = await requireAuth(token);
+  requireAdmin(me);
+  const show = p.show === true || p.showServiceCards === true;
+  await writeSetting(SHOW_SERVICE_CARDS_KEY, show);
+  return { showServiceCards: show };
+}
+
+// Credit the referrer `percent` of `basePaisa` (rounded to whole paisa)
+// and record the earning in the referrals ledger. No-op when the user
+// was not referred, the referrer is gone, or the percent is 0. Runs in
+// the same request as the deposit approval / order that earned it, using
+// the commission percent in effect at that moment.
+async function creditReferralCommission(
+  referredId: string,
+  kind: 'deposit' | 'order',
+  basePaisa: number,
+): Promise<number> {
+  const { data: referred } = await db()
+    .from('profiles')
+    .select('referred_by')
+    .eq('id', referredId)
+    .maybeSingle();
+  const referrerId = (referred as { referred_by?: string | null } | null)?.referred_by;
+  if (!referrerId) return 0;
+  const settings = await readReferralSettings();
+  if (settings.commissionPercent <= 0) return 0;
+  const earned = Math.round((basePaisa * settings.commissionPercent) / 100);
+  if (earned <= 0) return 0;
+  const { data: referrer } = await db()
+    .from('profiles')
+    .select('balance_paisa')
+    .eq('id', referrerId)
+    .single();
+  if (!referrer) return 0;
+  await db()
+    .from('profiles')
+    .update({ balance_paisa: (referrer as { balance_paisa: number }).balance_paisa + earned })
+    .eq('id', referrerId);
+  await db().from('referral_earnings').insert({
+    referrer_id: referrerId,
+    referred_id: referredId,
+    kind,
+    base_paisa: basePaisa,
+    percent: settings.commissionPercent,
+    earned_paisa: earned,
+  });
+  return earned;
 }
 
 async function listSections(_p: Params, token: string | null) {
@@ -382,10 +605,7 @@ async function addSection(p: Params, token: string | null) {
     throw new Error('That section already exists');
   }
   const next = [...custom, { platform, category }];
-  const { error } = await db()
-    .from('settings')
-    .upsert({ key: CUSTOM_SECTIONS_KEY, value: next });
-  if (error) throw new Error(error.message);
+  await writeSetting(CUSTOM_SECTIONS_KEY, next);
   return { section: { platform, category } };
 }
 
@@ -431,6 +651,9 @@ async function placeOrder(p: Params, token: string | null) {
       total_orders: me.total_orders + 1,
     })
     .eq('id', me.id);
+
+  // Referral commission on the order amount (same request).
+  await creditReferralCommission(me.id, 'order', total);
   return { order, firstOrder };
 }
 
@@ -583,6 +806,8 @@ async function resolveFund(p: Params, token: string | null) {
         .update({ balance_paisa: owner.balance_paisa + fund.amount_paisa })
         .eq('id', fund.profile_id);
     }
+    // Referral commission on the approved deposit (same request).
+    await creditReferralCommission(fund.profile_id, 'deposit', fund.amount_paisa);
   }
   return { resolved: status };
 }
@@ -847,13 +1072,171 @@ async function setConversationStatus(p: Params, token: string | null) {
   return { conversation: data };
 }
 
+// ---------------------------------------------------------------- referrals
+
+const REFERRAL_LINK_BASE = 'https://muneebghaziservices.vercel.app';
+
+function referralLink(code: string): string {
+  return `${REFERRAL_LINK_BASE}/?ref=${code}`;
+}
+
+async function getMyReferral(_p: Params, token: string | null) {
+  const me = await requireAuth(token);
+  const code = me.referral_code || '';
+  const settings = await readReferralSettings();
+  const [referredRes, earningsRes, withdrawalsRes] = await Promise.all([
+    db().from('profiles').select('id, display_name, created_at').eq('referred_by', me.id),
+    db().from('referral_earnings').select('*').eq('referrer_id', me.id).order('created_at', { ascending: false }),
+    db().from('withdrawals').select('*').eq('profile_id', me.id).order('created_at', { ascending: false }),
+  ]);
+  const referred = (referredRes.data ?? []) as any[];
+  const earnings = (earningsRes.data ?? []) as any[];
+  const totalEarned = earnings.reduce((s: number, e: any) => s + Number(e.earned_paisa || 0), 0);
+  return {
+    referralCode: code,
+    referralLink: code ? referralLink(code) : '',
+    referredCount: referred.length,
+    totalEarnedPaisa: totalEarned,
+    commissionPercent: settings.commissionPercent,
+    minWithdrawalRs: settings.minWithdrawalRs,
+    referredUsers: referred,
+    earnings,
+    withdrawals: withdrawalsRes.data ?? [],
+  };
+}
+
+async function listReferrals(_p: Params, token: string | null) {
+  const me = await requireAuth(token);
+  requireAdmin(me);
+  const [profilesRes, earningsRes] = await Promise.all([
+    db().from('profiles').select('id, display_name, referral_code, referred_by, created_at').order('created_at', { ascending: true }),
+    db().from('referral_earnings').select('*').order('created_at', { ascending: false }),
+  ]);
+  const profiles = (profilesRes.data ?? []) as any[];
+  const byId = new Map<string, any>(profiles.map((x) => [x.id, x]));
+  const referrals = profiles
+    .filter((x) => x.referred_by)
+    .map((x) => {
+      const referrer = byId.get(x.referred_by);
+      return {
+        referredId: x.id,
+        referredName: x.display_name,
+        joinedAt: x.created_at,
+        referrerId: x.referred_by,
+        referrerName: referrer?.display_name ?? '',
+        referralCode: referrer?.referral_code ?? '',
+      };
+    });
+  const earnings = (earningsRes.data ?? []) as any[];
+  const totalsMap = new Map<string, {
+    referrerId: string; referrerName: string; referralCode: string;
+    totalEarnedPaisa: number; count: number;
+  }>();
+  for (const e of earnings) {
+    const r = byId.get(e.referrer_id);
+    const t = totalsMap.get(e.referrer_id) ?? {
+      referrerId: e.referrer_id,
+      referrerName: r?.display_name ?? '',
+      referralCode: r?.referral_code ?? '',
+      totalEarnedPaisa: 0,
+      count: 0,
+    };
+    t.totalEarnedPaisa += Number(e.earned_paisa || 0);
+    t.count += 1;
+    totalsMap.set(e.referrer_id, t);
+  }
+  return { referrals, totals: [...totalsMap.values()], earnings };
+}
+
+// --------------------------------------------------------------- withdrawals
+
+async function requestWithdrawal(p: Params, token: string | null) {
+  const me = await requireAuth(token);
+  const amount = Number(p.amountPaisa);
+  if (!Number.isInteger(amount) || amount <= 0) throw new Error('Enter a withdrawal amount');
+  const settings = await readReferralSettings();
+  const minPaisa = settings.minWithdrawalRs * 100;
+  if (amount < minPaisa) throw new Error(`Minimum withdrawal is Rs ${settings.minWithdrawalRs}`);
+  if (amount > me.balance_paisa) throw new Error('Withdrawal amount exceeds your balance');
+  const { data, error } = await db()
+    .from('withdrawals')
+    .insert({ profile_id: me.id, amount_paisa: amount, status: 'Pending' })
+    .select('*')
+    .single();
+  if (error || !data) throw new Error(error?.message || 'Could not request withdrawal');
+  // Balance is deducted immediately at request time.
+  await db()
+    .from('profiles')
+    .update({ balance_paisa: me.balance_paisa - amount })
+    .eq('id', me.id);
+  return { withdrawal: data };
+}
+
+async function listWithdrawals(_p: Params, token: string | null) {
+  const me = await requireAuth(token);
+  requirePerm(me, 'funds');
+  const { data, error } = await db()
+    .from('withdrawals')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(500);
+  if (error) throw new Error(error.message);
+  return { withdrawals: data ?? [] };
+}
+
+async function resolveWithdrawal(p: Params, token: string | null) {
+  const me = await requireAuth(token);
+  requirePerm(me, 'funds');
+  if (!p.withdrawalId || typeof p.approve !== 'boolean') throw new Error('Invalid withdrawal');
+  const { data: w, error } = await db()
+    .from('withdrawals')
+    .select('*')
+    .eq('id', p.withdrawalId)
+    .maybeSingle();
+  if (error || !w) throw new Error('Withdrawal not found');
+  if (w.status !== 'Pending') throw new Error('Withdrawal already resolved');
+  const status = p.approve ? 'Approved' : 'Rejected';
+  const { error: uerr } = await db()
+    .from('withdrawals')
+    .update({ status })
+    .eq('id', w.id);
+  if (uerr) throw new Error(uerr.message);
+  if (!p.approve) {
+    // Rejected: refund the deducted balance in full.
+    const { data: owner } = await db()
+      .from('profiles')
+      .select('balance_paisa')
+      .eq('id', w.profile_id)
+      .single();
+    if (owner) {
+      await db()
+        .from('profiles')
+        .update({ balance_paisa: owner.balance_paisa + w.amount_paisa })
+        .eq('id', w.profile_id);
+    }
+  }
+  // Approved: the admin pays manually outside the system (e.g. JazzCash /
+  // UBL) and marks it approved — no money moves on approve.
+  return { resolved: status };
+}
+
 // ------------------------------------------------------------------ handler
 
 const ACTIONS: Record<string, (p: Params, token: string | null) => Promise<unknown>> = {
   signup,
   signin,
+  changePassword,
   getme,
   bootstrap,
+  getShowServiceCards,
+  saveShowServiceCards,
+  getReferralSettings,
+  saveReferralSettings,
+  getMyReferral,
+  listReferrals,
+  requestWithdrawal,
+  listWithdrawals,
+  resolveWithdrawal,
   adminListServices,
   saveService,
   deleteService,

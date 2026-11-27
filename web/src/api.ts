@@ -82,6 +82,67 @@ export interface Profile {
   balancePaisa: number;
   totalSpentPaisa: number;
   totalOrders: number;
+  referralCode?: string;
+}
+
+export interface ReferralSettings {
+  commissionPercent: number;
+  minWithdrawalRs: number;
+}
+
+export interface ReferralEarning {
+  id: string;
+  referrerId: string;
+  referredId: string;
+  kind: string; // 'deposit' | 'order'
+  basePaisa: number;
+  percent: number;
+  earnedPaisa: number;
+  createdAt: string;
+}
+
+export interface Withdrawal {
+  id: string;
+  profileId: string;
+  amountPaisa: number;
+  status: string; // Pending | Approved | Rejected
+  createdAt: string;
+  customerName?: string;
+}
+
+export interface ReferredUser {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
+export interface MyReferral {
+  referralCode: string;
+  referralLink: string;
+  referredCount: number;
+  totalEarnedPaisa: number;
+  commissionPercent: number;
+  minWithdrawalRs: number;
+  referredUsers: ReferredUser[];
+  earnings: ReferralEarning[];
+  withdrawals: Withdrawal[];
+}
+
+export interface ReferralRow {
+  referredId: string;
+  referredName: string;
+  joinedAt: string;
+  referrerId: string;
+  referrerName: string;
+  referralCode: string;
+}
+
+export interface ReferrerTotal {
+  referrerId: string;
+  referrerName: string;
+  referralCode: string;
+  totalEarnedPaisa: number;
+  count: number;
 }
 
 export interface Order {
@@ -185,6 +246,7 @@ export function normMethod(r: Record<string, unknown>): PaymentMethod {
 
 export function normProfile(r: Record<string, unknown>): Profile {
   const perms = (r.permissions ?? r.perms ?? {}) as Record<string, unknown>;
+  const referralCode = String(pick(r, ['referral_code', 'referralCode'], ''));
   return {
     id: String(pick(r, ['id'], '')),
     name: String(pick(r, ['name', 'display_name'], '')),
@@ -198,6 +260,52 @@ export function normProfile(r: Record<string, unknown>): Profile {
     balancePaisa: num(pick(r, ['balance_paisa', 'balancePaisa', 'balance'], 0)),
     totalSpentPaisa: num(pick(r, ['total_spent_paisa', 'totalSpentPaisa', 'total_spent'], 0)),
     totalOrders: num(pick(r, ['total_orders', 'totalOrders', 'orders_count'], 0)),
+    ...(referralCode ? { referralCode } : {}),
+  };
+}
+
+export function normReferralEarning(r: Record<string, unknown>): ReferralEarning {
+  return {
+    id: String(pick(r, ['id'], '')),
+    referrerId: String(pick(r, ['referrer_id', 'referrerId'], '')),
+    referredId: String(pick(r, ['referred_id', 'referredId'], '')),
+    kind: String(pick(r, ['kind'], '')),
+    basePaisa: num(pick(r, ['base_paisa', 'basePaisa'], 0)),
+    percent: num(pick(r, ['percent'], 0)),
+    earnedPaisa: num(pick(r, ['earned_paisa', 'earnedPaisa'], 0)),
+    createdAt: String(pick(r, ['created_at', 'createdAt'], '')),
+  };
+}
+
+export function normWithdrawal(r: Record<string, unknown>): Withdrawal {
+  return {
+    id: String(pick(r, ['id'], '')),
+    profileId: String(pick(r, ['profile_id', 'profileId'], '')),
+    amountPaisa: num(pick(r, ['amount_paisa', 'amountPaisa', 'amount'], 0)),
+    status: String(pick(r, ['status'], 'Pending')),
+    createdAt: String(pick(r, ['created_at', 'createdAt'], '')),
+    customerName: String(pick(r, ['customer_name', 'customerName'], '')),
+  };
+}
+
+export function normMyReferral(r: Record<string, unknown>): MyReferral {
+  const referredUsers = (Array.isArray(r.referredUsers) ? r.referredUsers : []) as Record<string, unknown>[];
+  const earnings = (Array.isArray(r.earnings) ? r.earnings : []) as Record<string, unknown>[];
+  const withdrawals = (Array.isArray(r.withdrawals) ? r.withdrawals : []) as Record<string, unknown>[];
+  return {
+    referralCode: String(pick(r, ['referralCode', 'referral_code'], '')),
+    referralLink: String(pick(r, ['referralLink', 'referral_link'], '')),
+    referredCount: num(pick(r, ['referredCount', 'referred_count'], referredUsers.length), referredUsers.length),
+    totalEarnedPaisa: num(pick(r, ['totalEarnedPaisa', 'total_earned_paisa'], 0)),
+    commissionPercent: num(pick(r, ['commissionPercent', 'commission_percent'], 5), 5),
+    minWithdrawalRs: num(pick(r, ['minWithdrawalRs', 'min_withdrawal_rs'], 500), 500),
+    referredUsers: referredUsers.map((u) => ({
+      id: String(pick(u, ['id'], '')),
+      name: String(pick(u, ['display_name', 'name'], '')),
+      createdAt: String(pick(u, ['created_at', 'createdAt'], '')),
+    })),
+    earnings: earnings.map(normReferralEarning),
+    withdrawals: withdrawals.map(normWithdrawal),
   };
 }
 

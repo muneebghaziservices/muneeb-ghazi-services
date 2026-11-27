@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './index.css';
 import {
   api, copyText, fileToBase64, fmtRs, getToken, normConversation, normFund,
-  normMethod, normOrder, normProfile, normService, setToken,
+  normMethod, normMyReferral, normOrder, normProfile, normService, setToken,
 } from './api';
 import type {
-  Conversation, FundRequest, Order, PaymentMethod, Profile, Service,
+  Conversation, FundRequest, MyReferral, Order, PaymentMethod, Profile, Service,
 } from './api';
 import AdminPanel from './AdminPanel';
 
@@ -23,6 +23,7 @@ function groupLabel(s: Service): string {
 export default function App() {
   const [services, setServices] = useState<Service[]>([]);
   const [methods, setMethods] = useState<PaymentMethod[]>([]);
+  const [showServiceCards, setShowServiceCards] = useState(false);
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
   const [loading, setLoading] = useState(true);
   const [bootstrapError, setBootstrapError] = useState('');
@@ -48,9 +49,10 @@ export default function App() {
 
   const loadBootstrap = useCallback(async () => {
     try {
-      const d = await api<{ services?: unknown[]; methods?: unknown[] }>('bootstrap');
+      const d = await api<{ services?: unknown[]; methods?: unknown[]; showServiceCards?: boolean }>('bootstrap');
       setServices(((d.services ?? []) as Record<string, unknown>[]).map(normService).filter((s) => s.active));
       setMethods(((d.methods ?? []) as Record<string, unknown>[]).map(normMethod).filter((m) => m.active));
+      setShowServiceCards(d.showServiceCards === true);
       setBootstrapError('');
     } catch (e) {
       setBootstrapError(e instanceof Error ? e.message : 'Could not load services.');
@@ -175,6 +177,7 @@ export default function App() {
       ) : view === 'dashboard' && profile ? (
         <Dashboard
           profile={profile} orders={orders} fundRequests={fundRequests} methods={methods}
+          toast={toast} onRefresh={() => { void loadMe(); }}
           onAddFunds={() => setFundsOpen(true)}
           onCancelOrder={async (orderId) => {
             try {
@@ -262,7 +265,7 @@ export default function App() {
             </div>
           )}
 
-          {visibleServices.length > 0 && (
+          {showServiceCards && visibleServices.length > 0 && (
             <div className="cards" style={{ marginTop: 18 }}>
               {visibleServices.map((s) => (
                 <button key={s.id} type="button" onClick={() => pickService(s)}
@@ -334,18 +337,34 @@ function AuthSheet({ initialMode, onDone, onClose }: {
 }) {
   const [mode, setMode] = useState<'signin' | 'signup'>(initialMode);
   const [name, setName] = useState('');
-  const [pin, setPin] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [referralCode, setReferralCode] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+
+  // A referral link (?ref=CODE) prefills the signup referral-code field.
+  useEffect(() => {
+    if (initialMode !== 'signup') return;
+    try {
+      const ref = new URLSearchParams(window.location.search).get('ref');
+      if (ref) setReferralCode(ref.trim().toUpperCase());
+    } catch { /* ignore */ }
+  }, [initialMode]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setErr('');
     if (!name.trim()) { setErr('Please enter your name.'); return; }
-    if (!/^\d{4,6}$/.test(pin)) { setErr('PIN must be 4–6 digits.'); return; }
+    if (password.length < 6) { setErr('Password must be at least 6 characters.'); return; }
     setBusy(true);
     try {
-      const d = await api<{ profile?: Record<string, unknown>; token?: string }>(mode, { name: name.trim(), pin });
+      const d = await api<{ profile?: Record<string, unknown>; token?: string }>(mode, {
+        name: name.trim(),
+        password,
+        ...(mode === 'signup' && referralCode.trim()
+          ? { referralCode: referralCode.trim().toUpperCase() } : {}),
+      });
       if (!d.profile || !d.token) throw new Error('Unexpected response from server.');
       onDone(normProfile(d.profile), d.token);
     } catch (e2) {
@@ -360,15 +379,27 @@ function AuthSheet({ initialMode, onDone, onClose }: {
           <h3>{mode === 'signup' ? 'Create your account' : 'Welcome back'}</h3>
           <button type="button" className="x-btn" onClick={onClose} aria-label="Close">✕</button>
         </div>
-        <p className="sub">{mode === 'signup' ? 'Pick a display name and a 4–6 digit PIN.' : 'Enter your name and PIN to log in.'}</p>
+        <p className="sub">{mode === 'signup' ? 'Pick a display name and a password (at least 6 characters).' : 'Enter your name and password to log in.'}</p>
         <form onSubmit={submit}>
           <label className="field"><span>Display name</span>
             <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Muneeb Ghazi" autoComplete="username" />
           </label>
-          <label className="field"><span>PIN (4–6 digits)</span>
-            <input className="input" type="password" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="••••" autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} />
+          <label className="field"><span>Password (min 6 characters)</span>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input className="input" style={{ flex: 1 }} type={showPassword ? 'text' : 'password'} value={password}
+                onChange={(e) => setPassword(e.target.value)} placeholder="••••••"
+                autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} />
+              <button type="button" className="btn btn-sm" onClick={() => setShowPassword((v) => !v)} aria-label={showPassword ? 'Hide password' : 'Show password'}>
+                {showPassword ? 'Hide' : 'Show'}
+              </button>
+            </div>
           </label>
-          <p className="hint">Keep your PIN safe — it is the only way back into your account. There is no password reset.</p>
+          {mode === 'signup' && (
+            <label className="field"><span>Referral code (optional)</span>
+              <input className="input" value={referralCode} onChange={(e) => setReferralCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))} placeholder="e.g. MUNE1234" autoComplete="off" />
+            </label>
+          )}
+          <p className="hint">Keep your password safe — it is the only way back into your account. There is no password reset.</p>
           {err && <p className="error">{err}</p>}
           <button type="submit" className="btn btn-primary btn-block" disabled={busy}>
             {busy ? 'Please wait…' : mode === 'signup' ? 'Sign up' : 'Log in'}
@@ -580,17 +611,20 @@ function AddFundsSheet({ methods, toast, onClose, onDone }: {
 
 /* ================= Dashboard ================= */
 
-function Dashboard({ profile, orders, fundRequests, methods, onAddFunds, onCancelOrder }: {
+function Dashboard({ profile, orders, fundRequests, methods, toast, onRefresh, onAddFunds, onCancelOrder }: {
   profile: Profile; orders: Order[]; fundRequests: FundRequest[]; methods: PaymentMethod[];
+  toast: (m: string, e?: boolean) => void; onRefresh: () => void;
   onAddFunds: () => void; onCancelOrder: (id: string) => void;
 }) {
-  const [tab, setTab] = useState<'orders' | 'funds'>('orders');
+  const [tab, setTab] = useState<'orders' | 'funds' | 'referral' | 'password'>('orders');
   return (
     <main>
       <h2 className="section-title">My Dashboard — {profile.name}</h2>
       <div className="tabs">
         <button type="button" className={`tab${tab === 'orders' ? ' active' : ''}`} onClick={() => setTab('orders')}>My Orders ({orders.length})</button>
         <button type="button" className={`tab${tab === 'funds' ? ' active' : ''}`} onClick={() => setTab('funds')}>My Fund Requests ({fundRequests.length})</button>
+        <button type="button" className={`tab${tab === 'referral' ? ' active' : ''}`} onClick={() => setTab('referral')}>Refer &amp; Earn</button>
+        <button type="button" className={`tab${tab === 'password' ? ' active' : ''}`} onClick={() => setTab('password')}>Change Password</button>
         <button type="button" className="tab" onClick={onAddFunds}>+ Add funds</button>
       </div>
       {tab === 'orders' && (
@@ -636,7 +670,155 @@ function Dashboard({ profile, orders, fundRequests, methods, onAddFunds, onCance
           ))}
         </div>
       )}
+      {tab === 'referral' && <ReferralPanel profile={profile} toast={toast} onRefresh={onRefresh} />}
+      {tab === 'password' && <ChangePasswordPanel toast={toast} />}
     </main>
+  );
+}
+
+/* ================= Refer & Earn + Change password ================= */
+
+function ReferralPanel({ profile, toast, onRefresh }: {
+  profile: Profile; toast: (m: string, e?: boolean) => void; onRefresh: () => void;
+}) {
+  const [info, setInfo] = useState<MyReferral | null>(null);
+  const [amountRs, setAmountRs] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const d = await api<Record<string, unknown>>('getMyReferral');
+      setInfo(normMyReferral(d));
+    } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load referral info.'); }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  async function withdraw(e: React.FormEvent) {
+    e.preventDefault();
+    setErr('');
+    const rs = Number(amountRs);
+    if (!info) return;
+    if (!Number.isFinite(rs) || rs <= 0) { setErr('Enter an amount in Rs.'); return; }
+    if (rs < info.minWithdrawalRs) { setErr(`Minimum withdrawal is Rs ${info.minWithdrawalRs}.`); return; }
+    if (Math.round(rs * 100) > profile.balancePaisa) { setErr('Amount exceeds your balance.'); return; }
+    setBusy(true);
+    try {
+      await api('requestWithdrawal', { amountPaisa: Math.round(rs * 100) });
+      toast('Withdrawal requested — the admin will pay you manually and confirm it here.');
+      setAmountRs('');
+      void load();
+      onRefresh();
+    } catch (e2) { setErr(e2 instanceof Error ? e2.message : 'Withdrawal failed.'); } finally { setBusy(false); }
+  }
+
+  const waText = info?.referralLink
+    ? `Join Muneeb Ghazi Services with my referral link and grow your socials: ${info.referralLink}`
+    : '';
+
+  return (
+    <div className="panel">
+      <h3>Refer &amp; Earn</h3>
+      <p style={{ color: 'var(--muted)', fontSize: 14 }}>
+        Share your link — when someone joins with your code and adds funds or places an order,
+        you earn {info ? `${info.commissionPercent}%` : 'a commission'} of it in your wallet.
+      </p>
+      {err && <p className="error">{err}</p>}
+      {!info && !err && <p style={{ color: 'var(--muted)' }}>Loading…</p>}
+      {info && (
+        <>
+          <div className="meta-line">Your referral code: <b>{info.referralCode || '—'}</b></div>
+          <div className="meta-line">People joined via your code: <b>{info.referredCount}</b></div>
+          <div className="meta-line">Total earned: <b>{fmtRs(info.totalEarnedPaisa)}</b></div>
+          {info.referralLink && (
+            <div className="copy-row" style={{ marginTop: 10 }}>
+              <span className="mono" style={{ wordBreak: 'break-all' }}>{info.referralLink}</span>
+              <button type="button" className="btn btn-sm" onClick={async () => { await copyText(info.referralLink); toast('Referral link copied.'); }}>Copy link</button>
+              <a className="btn btn-sm" href={`https://wa.me/?text=${encodeURIComponent(waText)}`} target="_blank" rel="noreferrer">Share on WhatsApp</a>
+            </div>
+          )}
+          {info.referredUsers.length > 0 && (
+            <div style={{ marginTop: 14 }}>
+              <b>Joined via your code</b>
+              {info.referredUsers.map((u) => (
+                <div key={u.id} className="meta-line">{u.name}{u.createdAt ? ` · ${new Date(u.createdAt).toLocaleDateString()}` : ''}</div>
+              ))}
+            </div>
+          )}
+          {info.earnings.length > 0 && (
+            <div style={{ marginTop: 14 }}>
+              <b>Earnings</b>
+              {info.earnings.map((e) => (
+                <div key={e.id} className="meta-line">
+                  {e.kind === 'deposit' ? 'Deposit' : 'Order'} · {fmtRs(e.basePaisa)} × {e.percent}% = <b>{fmtRs(e.earnedPaisa)}</b>
+                  {e.createdAt ? ` · ${new Date(e.createdAt).toLocaleString()}` : ''}
+                </div>
+              ))}
+            </div>
+          )}
+          <form onSubmit={withdraw} style={{ marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+            <h4 style={{ margin: '0 0 8px' }}>Withdraw earnings</h4>
+            <p className="hint">Minimum withdrawal: Rs {info.minWithdrawalRs} · Your balance: {fmtRs(profile.balancePaisa)}. The amount is deducted now; the admin pays you manually and marks it approved.</p>
+            <label className="field"><span>Amount (Rs)</span>
+              <input className="input" type="number" min={info.minWithdrawalRs} value={amountRs}
+                onChange={(e) => setAmountRs(e.target.value)} placeholder={`e.g. ${info.minWithdrawalRs}`} />
+            </label>
+            <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? 'Sending…' : 'Request withdrawal'}</button>
+          </form>
+          {info.withdrawals.length > 0 && (
+            <div style={{ marginTop: 14 }}>
+              <b>My withdrawals</b>
+              {info.withdrawals.map((w) => (
+                <div key={w.id} className="meta-line">
+                  {fmtRs(w.amountPaisa)} · <span className={`status ${w.status.toLowerCase()}`}>{w.status}</span>
+                  {w.createdAt ? ` · ${new Date(w.createdAt).toLocaleString()}` : ''}
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function ChangePasswordPanel({ toast }: { toast: (m: string, e?: boolean) => void }) {
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setErr('');
+    if (next.length < 6) { setErr('New password must be at least 6 characters.'); return; }
+    if (next !== confirm) { setErr('New passwords do not match.'); return; }
+    setBusy(true);
+    try {
+      await api('changePassword', { currentPassword: current, newPassword: next });
+      toast('Password changed.');
+      setCurrent(''); setNext(''); setConfirm('');
+    } catch (e2) { setErr(e2 instanceof Error ? e2.message : 'Change failed.'); } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="panel">
+      <h3>Change password</h3>
+      <form onSubmit={submit}>
+        <label className="field"><span>Current password</span>
+          <input className="input" type="password" value={current} onChange={(e) => setCurrent(e.target.value)} autoComplete="current-password" />
+        </label>
+        <label className="field"><span>New password (min 6 characters)</span>
+          <input className="input" type="password" value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" />
+        </label>
+        <label className="field"><span>Confirm new password</span>
+          <input className="input" type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" />
+        </label>
+        {err && <p className="error">{err}</p>}
+        <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Change password'}</button>
+      </form>
+    </div>
   );
 }
 

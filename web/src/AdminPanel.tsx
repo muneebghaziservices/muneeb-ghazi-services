@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   api, copyText, fileToBase64, fmtRs, normConversation, normFund, normMethod,
-  normOrder, normProfile, normService, paisaToRs,
+  normOrder, normProfile, normService, normWithdrawal,
+  paisaToRs,
 } from './api';
 import type {
-  Conversation, FundRequest, Order, PaymentMethod, Profile, Service,
+  Conversation, FundRequest, Order, PaymentMethod, Profile, ReferralRow,
+  ReferrerTotal, ReferralSettings, Service, Withdrawal,
 } from './api';
 
-type Tab = 'services' | 'orders' | 'funds' | 'methods' | 'messages' | 'team';
+type Tab = 'services' | 'orders' | 'funds' | 'methods' | 'messages' | 'team' | 'referrals' | 'withdrawals';
 
 const ORDER_STATUSES = ['Pending', 'In Progress', 'Completed', 'Cancelled'];
 
@@ -23,6 +25,8 @@ export default function AdminPanel({ profile, toast, onBack }: {
     { id: 'funds', label: 'Funds', ok: can('funds') },
     { id: 'methods', label: 'Payments & QR', ok: profile.role === 'admin' },
     { id: 'messages', label: 'Messages', ok: can('messages') },
+    { id: 'referrals', label: 'Referrals', ok: profile.role === 'admin' },
+    { id: 'withdrawals', label: 'Withdrawals', ok: can('funds') },
     { id: 'team', label: 'Team & Users', ok: profile.role === 'admin' },
   ].filter((t) => t.ok) as { id: Tab; label: string; ok: boolean }[];
 
@@ -51,6 +55,8 @@ export default function AdminPanel({ profile, toast, onBack }: {
       {tab === 'funds' && <FundsTab toast={toast} />}
       {tab === 'methods' && <MethodsTab toast={toast} />}
       {tab === 'messages' && <MessagesTab toast={toast} />}
+      {tab === 'referrals' && <ReferralsTab toast={toast} />}
+      {tab === 'withdrawals' && <WithdrawalsTab toast={toast} />}
       {tab === 'team' && <TeamTab toast={toast} />}
     </main>
   );
@@ -76,8 +82,27 @@ function ServicesTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
   const [newCategory, setNewCategory] = useState('');
   const [showSectionForm, setShowSectionForm] = useState(false);
   const [newSection, setNewSection] = useState({ platform: 'TikTok', category: '' });
+  const [showServiceCards, setShowServiceCards] = useState(false);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+
+  const loadCardsFlag = useCallback(async () => {
+    try {
+      const d = await api<{ showServiceCards?: boolean }>('getShowServiceCards');
+      setShowServiceCards(d.showServiceCards === true);
+    } catch { /* flag stays off */ }
+  }, []);
+
+  async function saveCardsFlag(next: boolean) {
+    setShowServiceCards(next);
+    try {
+      await api('saveShowServiceCards', { show: next });
+      toast(next ? 'Service cards will now show in the shop.' : 'Service cards hidden — only the dropdown shows.');
+    } catch (e) {
+      setShowServiceCards(!next);
+      toast(e instanceof Error ? e.message : 'Could not save setting.', true);
+    }
+  }
 
   const loadSections = useCallback(async () => {
     try {
@@ -94,7 +119,8 @@ function ServicesTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
       setList(((d.services ?? []) as Record<string, unknown>[]).map(normService));
     } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load services.'); }
     void loadSections();
-  }, [loadSections]);
+    void loadCardsFlag();
+  }, [loadSections, loadCardsFlag]);
   useEffect(() => { void load(); }, [load]);
 
   function startEdit(s: Service) {
@@ -157,6 +183,10 @@ function ServicesTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
   return (
     <div className="panel">
       <h3>Services ({list.length})</h3>
+      <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14, marginBottom: 12 }}>
+        <input type="checkbox" checked={showServiceCards} onChange={(e) => void saveCardsFlag(e.target.checked)} />
+        Show service cards in the shop (when off, only the services dropdown shows)
+      </label>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <button type="button" className="btn btn-primary" onClick={() => startEdit({ ...EMPTY_SERVICE })}>+ Add service</button>
         <button type="button" className="btn" onClick={() => { setShowSectionForm((v) => !v); setErr(''); }}>+ Add section</button>
@@ -544,6 +574,160 @@ function MessagesTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
         </div>
       ))}
       {list.length === 0 && <p style={{ color: 'var(--muted)' }}>No conversations yet.</p>}
+    </div>
+  );
+}
+
+/* ================= Referrals ================= */
+
+function ReferralsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
+  const [settings, setSettings] = useState<ReferralSettings>({ commissionPercent: 5, minWithdrawalRs: 500 });
+  const [rows, setRows] = useState<ReferralRow[]>([]);
+  const [totals, setTotals] = useState<ReferrerTotal[]>([]);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [s, r] = await Promise.all([
+        api<{ settings?: Record<string, unknown> }>('getReferralSettings'),
+        api<{ referrals?: unknown[]; totals?: unknown[] }>('listReferrals'),
+      ]);
+      if (s.settings) {
+        setSettings({
+          commissionPercent: Number(s.settings.commissionPercent ?? 5),
+          minWithdrawalRs: Number(s.settings.minWithdrawalRs ?? 500),
+        });
+      }
+      setRows(((r.referrals ?? []) as Record<string, unknown>[]).map((x) => ({
+        referredId: String(x.referredId ?? ''),
+        referredName: String(x.referredName ?? ''),
+        joinedAt: String(x.joinedAt ?? ''),
+        referrerId: String(x.referrerId ?? ''),
+        referrerName: String(x.referrerName ?? ''),
+        referralCode: String(x.referralCode ?? ''),
+      })));
+      setTotals(((r.totals ?? []) as Record<string, unknown>[]).map((x) => ({
+        referrerId: String(x.referrerId ?? ''),
+        referrerName: String(x.referrerName ?? ''),
+        referralCode: String(x.referralCode ?? ''),
+        totalEarnedPaisa: Number(x.totalEarnedPaisa ?? 0),
+        count: Number(x.count ?? 0),
+      })));
+    } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load referrals.'); }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true); setErr('');
+    try {
+      await api('saveReferralSettings', {
+        commissionPercent: settings.commissionPercent,
+        minWithdrawalRs: settings.minWithdrawalRs,
+      });
+      toast('Referral settings saved.');
+    } catch (e2) { setErr(e2 instanceof Error ? e2.message : 'Save failed.'); } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="panel">
+      <h3>Referrals</h3>
+      {err && <p className="error">{err}</p>}
+      <form onSubmit={save}>
+        <div className="inline-form">
+          <label className="field"><span>Commission percent (%)</span>
+            <input className="input" type="number" min={0} max={100} step="0.5" value={settings.commissionPercent}
+              onChange={(e) => setSettings({ ...settings, commissionPercent: Number(e.target.value) || 0 })} />
+          </label>
+          <label className="field"><span>Minimum withdrawal (Rs)</span>
+            <input className="input" type="number" min={0} step={1} value={settings.minWithdrawalRs}
+              onChange={(e) => setSettings({ ...settings, minWithdrawalRs: Math.max(0, Math.floor(Number(e.target.value) || 0)) })} />
+          </label>
+        </div>
+        <p className="hint">Commission applies to a referred user&apos;s approved deposits AND orders, credited to the referrer&apos;s wallet.</p>
+        <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save referral settings'}</button>
+      </form>
+
+      <h4 style={{ marginTop: 20 }}>Total earnings per referrer</h4>
+      {totals.length === 0 && <p style={{ color: 'var(--muted)' }}>No referral earnings yet.</p>}
+      {totals.map((t) => (
+        <div key={t.referrerId} className="row-item">
+          <div className="top"><b>{t.referrerName}</b><span>{fmtRs(t.totalEarnedPaisa)}</span></div>
+          <div className="meta-line">Code: {t.referralCode} · {t.count} earning{t.count === 1 ? '' : 's'}</div>
+        </div>
+      ))}
+
+      <h4 style={{ marginTop: 20 }}>Who referred whom ({rows.length})</h4>
+      {rows.length === 0 && <p style={{ color: 'var(--muted)' }}>Nobody has joined via a referral code yet.</p>}
+      {rows.map((r) => (
+        <div key={r.referredId} className="row-item">
+          <div className="top"><b>{r.referredName}</b><span>referred by {r.referrerName}</span></div>
+          <div className="meta-line">
+            Referrer code: {r.referralCode}
+            {r.joinedAt ? ` · Joined ${new Date(r.joinedAt).toLocaleString()}` : ''}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ================= Withdrawals ================= */
+
+function WithdrawalsTab({ toast }: { toast: (m: string, e?: boolean) => void }) {
+  const [list, setList] = useState<Withdrawal[]>([]);
+  const [names, setNames] = useState<Record<string, string>>({});
+  const [err, setErr] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const d = await api<{ withdrawals?: unknown[] }>('listWithdrawals');
+      setList(((d.withdrawals ?? []) as Record<string, unknown>[]).map(normWithdrawal));
+      try {
+        const u = await api<{ users?: unknown[] }>('listUsers');
+        const map: Record<string, string> = {};
+        ((u.users ?? []) as Record<string, unknown>[]).forEach((x) => {
+          map[String(x.id ?? '')] = String(x.display_name ?? x.name ?? '');
+        });
+        setNames(map);
+      } catch { /* names stay blank */ }
+    } catch (e) { setErr(e instanceof Error ? e.message : 'Could not load withdrawals.'); }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  async function resolve(id: string, approve: boolean) {
+    try {
+      await api('resolveWithdrawal', { withdrawalId: id, approve });
+      toast(approve ? 'Withdrawal approved — pay the user manually (e.g. JazzCash / UBL).' : 'Withdrawal rejected — balance refunded.');
+      void load();
+    } catch (e) { toast(e instanceof Error ? e.message : 'Failed.', true); }
+  }
+
+  return (
+    <div className="panel">
+      <h3>Withdrawals ({list.length})</h3>
+      <p className="hint">Approving only marks the request approved — pay the user manually outside the system. Rejecting refunds the deducted balance in full.</p>
+      {err && <p className="error">{err}</p>}
+      {list.map((w) => (
+        <div key={w.id} className="row-item">
+          <div className="top">
+            <b>{fmtRs(w.amountPaisa)}</b>
+            <span className={`status ${w.status.toLowerCase()}`}>{w.status}</span>
+          </div>
+          <div className="meta-line">
+            {names[w.profileId] || w.profileId}
+            {w.createdAt && <><br />{new Date(w.createdAt).toLocaleString()}</>}
+          </div>
+          {w.status === 'Pending' && (
+            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+              <button type="button" className="btn btn-primary btn-sm" onClick={() => resolve(w.id, true)}>Approve (paid manually)</button>
+              <button type="button" className="btn btn-danger btn-sm" onClick={() => resolve(w.id, false)}>Reject &amp; refund</button>
+            </div>
+          )}
+        </div>
+      ))}
+      {list.length === 0 && <p style={{ color: 'var(--muted)' }}>No withdrawal requests.</p>}
     </div>
   );
 }
