@@ -705,6 +705,15 @@ async function applyOrderRefund(order: any, refundPaisa: number): Promise<void> 
   }
 }
 
+// PostgREST reports a missing column two ways depending on the query:
+// Postgres "column ... does not exist", or its own schema-cache message
+// "Could not find the 'reason' column of 'orders' in the schema cache".
+// (Found live 2026-11-28: the first fallback regex missed the second
+// form and the whole Cancel request failed before migration 0004.)
+function isMissingColumnError(msg: string): boolean {
+  return /column .* does not exist/i.test(msg) || /could not find the .* column/i.test(msg);
+}
+
 // Update an order with the refund fields (status + reason + refunded_paisa).
 // Returns false when the reason/refunded_paisa columns do not exist yet
 // (migration 0004 not run) — the caller then falls back to a status-only
@@ -712,7 +721,7 @@ async function applyOrderRefund(order: any, refundPaisa: number): Promise<void> 
 // false instead of failing the whole request.
 async function saveOrderRefundFields(orderId: string, patch: Record<string, unknown>): Promise<boolean> {
   const { error } = await db().from('orders').update(patch).eq('id', orderId);
-  if (error && /column .* does not exist/i.test(error.message || '')) return false;
+  if (error && isMissingColumnError(error.message || '')) return false;
   if (error) throw new Error(error.message);
   return true;
 }
@@ -1352,7 +1361,7 @@ async function getAdminStats(_p: Params, token: string | null) {
     // without it instead of failing the whole stats call.
     (async () => {
       const r = await db().from('orders').select('amount_paisa, refunded_paisa, status, created_at').order('created_at', { ascending: false }).limit(5000);
-      if (r.error && /column .* does not exist/i.test(r.error.message || '')) {
+      if (r.error && isMissingColumnError(r.error.message || '')) {
         return db().from('orders').select('amount_paisa, status, created_at').order('created_at', { ascending: false }).limit(5000);
       }
       return r;
