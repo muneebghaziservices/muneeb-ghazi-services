@@ -23,7 +23,7 @@ function groupLabel(s: Service): string {
 export default function App() {
   const [services, setServices] = useState<Service[]>([]);
   const [methods, setMethods] = useState<PaymentMethod[]>([]);
-  const [hasAccounts, setHasAccounts] = useState(false);
+  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
   const [loading, setLoading] = useState(true);
   const [bootstrapError, setBootstrapError] = useState('');
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -48,10 +48,9 @@ export default function App() {
 
   const loadBootstrap = useCallback(async () => {
     try {
-      const d = await api<{ services?: unknown[]; methods?: unknown[]; hasAccounts?: boolean }>('bootstrap');
+      const d = await api<{ services?: unknown[]; methods?: unknown[] }>('bootstrap');
       setServices(((d.services ?? []) as Record<string, unknown>[]).map(normService).filter((s) => s.active));
       setMethods(((d.methods ?? []) as Record<string, unknown>[]).map(normMethod).filter((m) => m.active));
-      setHasAccounts(Boolean(d.hasAccounts));
       setBootstrapError('');
     } catch (e) {
       setBootstrapError(e instanceof Error ? e.message : 'Could not load services.');
@@ -151,8 +150,8 @@ export default function App() {
             </>
           ) : (
             <>
-              <button type="button" className="btn" onClick={() => setAuthOpen(true)}>Log in</button>
-              <button type="button" className="btn btn-primary" onClick={() => setAuthOpen(true)}>Sign up</button>
+              <button type="button" className="btn" onClick={() => { setAuthMode('signin'); setAuthOpen(true); }}>Log in</button>
+              <button type="button" className="btn btn-primary" onClick={() => { setAuthMode('signup'); setAuthOpen(true); }}>Sign up</button>
             </>
           )}
         </div>
@@ -279,7 +278,7 @@ export default function App() {
           {!loading && visibleServices.length === 0 && platform === 'TikTok' && !bootstrapError && (
             <div className="empty" style={{ marginTop: 16 }}>
               <b>No services yet</b>
-              Services are added by the admin. Please check back soon.
+              New services are coming soon. Please check back.
             </div>
           )}
         </main>
@@ -302,7 +301,7 @@ export default function App() {
       )}
 
       {authOpen && (
-        <AuthSheet hasAccounts={hasAccounts} onDone={handleAuthDone} onClose={() => setAuthOpen(false)} />
+        <AuthSheet initialMode={authMode} onDone={handleAuthDone} onClose={() => setAuthOpen(false)} />
       )}
 
       {orderOpen && selected && profile && (
@@ -330,10 +329,10 @@ export default function App() {
 
 /* ================= Auth ================= */
 
-function AuthSheet({ hasAccounts, onDone, onClose }: {
-  hasAccounts: boolean; onDone: (p: Profile, token: string) => void; onClose: () => void;
+function AuthSheet({ initialMode, onDone, onClose }: {
+  initialMode: 'signin' | 'signup'; onDone: (p: Profile, token: string) => void; onClose: () => void;
 }) {
-  const [mode, setMode] = useState<'signin' | 'signup'>(hasAccounts ? 'signin' : 'signup');
+  const [mode, setMode] = useState<'signin' | 'signup'>(initialMode);
   const [name, setName] = useState('');
   const [pin, setPin] = useState('');
   const [err, setErr] = useState('');
@@ -362,9 +361,6 @@ function AuthSheet({ hasAccounts, onDone, onClose }: {
           <button type="button" className="x-btn" onClick={onClose} aria-label="Close">✕</button>
         </div>
         <p className="sub">{mode === 'signup' ? 'Pick a display name and a 4–6 digit PIN.' : 'Enter your name and PIN to log in.'}</p>
-        {!hasAccounts && (
-          <div className="notice">👑 The first account to sign up becomes the <b>admin / owner</b> of the shop. After that, new sign-ups are customers.</div>
-        )}
         <form onSubmit={submit}>
           <label className="field"><span>Display name</span>
             <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Muneeb Ghazi" autoComplete="username" />
@@ -521,7 +517,7 @@ function AddFundsSheet({ methods, toast, onClose, onDone }: {
         methodId: method.id, amountPaisa: Math.round(rs * 100),
         senderName: senderName.trim(), ...(proof ? { proofBase64: proof } : {}),
       });
-      toast('Fund request sent — the admin will approve it shortly.');
+      toast('Fund request sent — it will be reviewed shortly.');
       onDone();
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : 'Request failed.');
@@ -535,8 +531,8 @@ function AddFundsSheet({ methods, toast, onClose, onDone }: {
           <h3>Add funds</h3>
           <button type="button" className="x-btn" onClick={onClose} aria-label="Close">✕</button>
         </div>
-        <p className="sub">Pay with any method below, then submit the form. An admin approves it and your balance is credited.</p>
-        {methods.length === 0 && <div className="notice warn">No payment methods are set up yet. Please ask the admin to add one.</div>}
+        <p className="sub">Pay with any method below, then submit the form. Your balance will be credited after approval.</p>
+        {methods.length === 0 && <div className="notice warn">No payment methods are set up yet. Please check back soon.</div>}
         <div className="method-chips">
           {methods.map((m) => (
             <button key={m.id} type="button" className={`chip${methodId === m.id ? ' active' : ''}`} onClick={() => setMethodId(m.id)}>

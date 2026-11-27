@@ -197,19 +197,19 @@ async function signup(p: Params) {
     .maybeSingle();
   if (existing) throw new Error('That name is already taken');
 
-  // First profile ever created becomes the admin/owner.
-  const { count } = await db().from('profiles').select('id', { count: 'exact', head: true });
-  const isFirst = (count ?? 0) === 0;
-
+  // SECURITY (admin lock): signup NEVER creates an admin. Every new
+  // account is a customer with no permissions. The owner's admin account
+  // must already exist (created before this lock, or promoted directly
+  // in the database) — there is no path from signup to admin anymore.
+  // Note: on a fresh database the first account is a customer too; the
+  // owner is promoted out-of-band, never through signup.
   const { data: profile, error } = await db()
     .from('profiles')
     .insert({
       display_name: name,
       pin_hash: hashPin(p.pin),
-      role: isFirst ? 'admin' : 'customer',
-      permissions: isFirst
-        ? { messages: true, services: true, orders: true, funds: true }
-        : {},
+      role: 'customer',
+      permissions: {},
     })
     .select('*')
     .single();
@@ -248,10 +248,9 @@ async function getme(p: Params, token: string | null) {
 }
 
 async function bootstrap() {
-  const [services, methods, countRes] = await Promise.all([
+  const [services, methods] = await Promise.all([
     db().from('services').select('*').eq('active', true).order('sort_order', { ascending: true }),
     db().from('payment_methods').select('*').eq('active', true).order('created_at', { ascending: true }),
-    db().from('profiles').select('id', { count: 'exact', head: true }),
   ]);
   const listedMethods = (methods.data ?? []).map((m: any) => ({
     ...m,
@@ -264,7 +263,6 @@ async function bootstrap() {
     // Returned under both keys: the frontend reads `methods`.
     paymentMethods: listedMethods,
     methods: listedMethods,
-    hasAccounts: (countRes.count ?? 0) > 0,
   };
 }
 
