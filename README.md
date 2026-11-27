@@ -6,15 +6,19 @@ Muse artifact.
 
 **This repo is the backend + deploy config.** The frontend lives in `web/`
 (owned by a separate agent) and talks to the backend only through one
-Netlify Function.
+function. There are two transports for the SAME handler
+(`netlify/functions/api.ts`): the Netlify Function, and the Vercel
+Serverless Function adapter (`api/index.ts`, which only translates
+Vercel's `(req, res)` into the Netlify-style event).
 
 ## Architecture
 
 ```
 Browser (web/, Vite SPA)
-   │  POST /.netlify/functions/api  { action, ...params }
+   │  POST /.netlify/functions/api  { action, ...params }   (Netlify)
+   │  POST /api                     { action, ...params }   (Vercel, VITE_API_URL=/api)
    ▼  header: x-session-token
-Netlify Function (netlify/functions/api.ts)
+Function (netlify/functions/api.ts — shared; api/index.ts adapts it for Vercel)
    │  service_role key (server-side only, never in the repo)
    ▼
 Supabase (free tier): Postgres + Storage
@@ -36,6 +40,8 @@ Supabase (free tier): Postgres + Storage
 
 Single endpoint: `POST /.netlify/functions/api` (locally:
 `http://localhost:8888/.netlify/functions/api` via `netlify dev`).
+On Vercel the same handler answers at `POST /api` (the frontend is built
+with `VITE_API_URL=/api`).
 
 - Request: JSON `{ "action": "<name>", ...params }`, optional header
   `x-session-token: <token>`.
@@ -105,6 +111,66 @@ actions. `pin_hash` and other users' session tokens are never returned.
    methods (UBL / JazzCash + QR) and team members from the admin panel —
    the catalog and payment methods start empty by design.
 
+## Deploy on Vercel (CURRENT — 2026-11-27)
+
+Netlify suspended the brand-new free account on 2026-11-27 (~06:21 PKT),
+minutes after the first successful deploy, so the live site moved to
+Vercel free. The code is ready: `api/index.ts` reuses the Netlify handler
+unchanged, `vercel.json` holds the build settings, and the root
+`package.json` holds the function's `@supabase/supabase-js` dependency.
+
+1. **Create a free Vercel account** at https://vercel.com (sign up with
+   GitHub `muneebghaziservices`). No card needed.
+2. **Import the GitHub repo** `muneebghaziservices/muneeb-ghazi-services`.
+   Vercel picks up `vercel.json` automatically:
+   - Build command: `cd web && npm install && npm run build`
+   - Output directory: `web/dist`
+   - Root directory: repo root (`.`) — do NOT set it to `web`, the `api/`
+     function lives at the repo root.
+   - Framework preset: Other (or leave the vercel.json values as-is).
+   - Functions run on the default Node.js runtime (Node 22, which has the
+     native WebSocket supabase-js needs). Do NOT use the Edge runtime.
+3. **Set environment variables BEFORE the first deploy** (Vercel →
+   Project → Settings → Environment Variables, all environments):
+   - `SUPABASE_URL` = `https://edagmjfopbqfpmdzaidg.supabase.co`
+   - `SUPABASE_SERVICE_ROLE_KEY` = the **service_role** key from Supabase
+     → Settings → API — see the warning below, this is the step that
+     broke the Netlify deploy.
+   - `VITE_API_URL` = `/api` (baked into the frontend at build time; the
+     frontend defaults to the Netlify path without it).
+   Then Deploy.
+4. **Claim the subdomain**: Vercel → Project → Settings → Domains → set
+   the project name to `muneeb-ghazi-services` (already the repo name) and
+   the site is `https://muneebghaziservices.vercel.app` — rename the
+   project to `muneebghaziservices` if that address is free, otherwise
+   keep the generated `muneeb-ghazi-services.vercel.app` and check which
+   one is live.
+5. **Verify**: open the site, open the services dropdown — the 9 TikTok
+   services must appear. If the dropdown is empty with no error, the
+   service_role key is wrong (see warning). Then create the first account
+   (admin), add UBL/JazzCash payment methods + QR.
+
+> ⚠️ **SERVICE_ROLE KEY WARNING — read before deploying anywhere.**
+> On the Netlify deploy (2026-11-27) the site went live but the services
+> dropdown showed "No services in this category yet" with NO error, even
+> though Supabase held 9 seeded services. Root cause: the API ran with a
+> key that Row Level Security blocks (almost certainly the **anon /
+> publishable key pasted instead of the service_role key** — both sit side
+> by side in Supabase → Settings → API). With RLS on and no public
+> policies, every query under the anon key returns ZERO rows, and
+> `bootstrap()` turns results into `data ?? []` without checking `.error`,
+> so the failure looked exactly like an empty shop. Reproduced locally:
+> with a fake/invalid key, `bootstrap` returns HTTP 200
+> `{ok:true, data:{services:[], ...}}`. How to tell the keys apart: decode
+> the JWT payload (e.g. at jwt.io — paste only the key, never share it) —
+> the service_role key has `"role": "service_role"`, the anon key has
+> `"role": "anon"`. The Vercel adapter (`api/index.ts`) now refuses to run
+> with a non-service_role key and returns a clear 500 naming the problem,
+> and also rejects a key whose `ref` claim differs from the project in
+> `SUPABASE_URL`. A separate earlier failure on Netlify (supabase-js
+> needs a native WebSocket, absent on Node 20) is fixed by Node 22
+> (`NODE_VERSION=22` in netlify.toml, `engines.node 22.x` here).
+
 ## Free-tier caveats
 
 - **Supabase free tier pauses a project after 1 week of inactivity.**
@@ -113,6 +179,12 @@ actions. `pin_hash` and other users' session tokens are never returned.
   problem.
 - **Netlify free tier is ~300 build/deploy credits per month** — plenty
   for this site; heavy rebuilds or large bandwidth can eat it.
+- **Netlify suspended the free account on 2026-11-27** (new-account
+  automated suspension, minutes after the first deploy). The live site is
+  on Vercel until/unless Netlify reinstates it; the Netlify path above
+  still works code-wise.
+- **Vercel free (Hobby) tier**: 100 GB bandwidth/month, serverless
+  function execution limits — plenty for this shop at current volume.
 - **No automatic payments yet.** Funds are still manual: the customer
   pays to the admin's UBL/JazzCash account, submits a screenshot +
   sender name, and the admin approves it in the Funds tab, which credits
@@ -126,7 +198,11 @@ actions. `pin_hash` and other users' session tokens are never returned.
 ## Security notes
 
 - The `SUPABASE_SERVICE_ROLE_KEY` bypasses RLS — it lives **only** in
-  Netlify environment variables, never in the repo, never in the browser.
+  Netlify/Vercel environment variables, never in the repo, never in the browser.
+  It MUST be the service_role key, not the anon key: the anon key is blocked
+  by RLS on every table and makes the shop look empty with no error (see
+  the warning in "Deploy on Vercel"). The Vercel adapter validates the
+  key's JWT role and refuses anything else.
 - PINs are `scrypt`-hashed with a per-user random salt; the raw PIN is
   never stored or logged.
 - CORS is currently `Access-Control-Allow-Origin: *` so the site works
