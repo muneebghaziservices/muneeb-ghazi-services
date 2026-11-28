@@ -714,6 +714,32 @@ function TutorialModal({ onClose }: { onClose: () => void }) {
 
 /* ================= Add Funds ================= */
 
+/* ================= Add Funds ================= */
+
+/* Inline SVG icons (lucide paths) — the live build has no icon library. */
+const IMAGE_PLUS_ICON = (
+  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7" />
+    <line x1="16" x2="22" y1="5" y2="5" />
+    <line x1="19" x2="19" y1="2" y2="8" />
+    <circle cx="9" cy="9" r="2" />
+    <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+  </svg>
+);
+const CHECK_ICON = (
+  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M20 6 9 17l-5-5" />
+  </svg>
+);
+const CHECK_ICON_BIG = (
+  <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M20 6 9 17l-5-5" />
+  </svg>
+);
+
+/* Add Funds sheet — same-to-same as the Muse artifact FundsSheet
+   (max-w-md bottom sheet, accent method pills, QR card, mandatory
+   screenshot-attach box with preview, accent submit, success screen). */
 function AddFundsSheet({ methods, toast, onClose, onDone }: {
   methods: PaymentMethod[]; toast: (m: string, e?: boolean) => void;
   onClose: () => void; onDone: () => void;
@@ -722,80 +748,126 @@ function AddFundsSheet({ methods, toast, onClose, onDone }: {
   const [amountRs, setAmountRs] = useState('');
   const [senderName, setSenderName] = useState('');
   const [proof, setProof] = useState<string | undefined>(undefined);
-  const [proofName, setProofName] = useState('');
+  const [copied, setCopied] = useState(false);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
   const method = methods.find((m) => m.id === methodId) ?? methods[0];
+
+  function handleProofFile(f: File | undefined) {
+    if (!f) return;
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(f.type)) {
+      setErr('Payment screenshot must be a PNG, JPEG or WebP image.');
+      return;
+    }
+    if (f.size > 5 * 1024 * 1024) {
+      setErr('Payment screenshot is too large (max 5 MB).');
+      return;
+    }
+    setErr('');
+    void fileToBase64(f).then((b64) => { setProof(b64); })
+      .catch(() => toast('Could not read that screenshot.', true));
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setErr('');
+    if (!method) { setErr('No payment method available yet — ask support in the chat.'); return; }
     const rs = Number(amountRs);
-    if (!method) { setErr('No payment method is available right now.'); return; }
-    if (!Number.isFinite(rs) || rs < 10) { setErr('Minimum amount is Rs 10.'); return; }
-    if (!senderName.trim()) { setErr('Sender account name is required.'); return; }
-    if (!proof) { setErr('Payment screenshot is required.'); return; }
+    if (!Number.isFinite(rs) || rs < 10) { setErr('Minimum amount is Rs 10 — enter at least Rs 10.'); return; }
+    if (senderName.trim().length < 2) { setErr('Enter your sending account name — the name you paid from.'); return; }
+    if (!proof) { setErr("Attach your payment screenshot — it's required to verify your payment."); return; }
     setBusy(true);
     try {
       await api('requestFunds', {
         methodId: method.id, amountPaisa: Math.round(rs * 100),
-        senderName: senderName.trim(), ...(proof ? { proofBase64: proof } : {}),
+        senderName: senderName.trim(), proofBase64: proof,
       });
-      toast('Fund request sent — it will be reviewed shortly.');
-      onDone();
+      setSent(true);
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : 'Request failed.');
     } finally { setBusy(false); }
   }
 
-  return (
-    <div className="overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="sheet" role="dialog" aria-label="Add funds">
-        <div className="sheet-head">
-          <h3>Add funds</h3>
-          <button type="button" className="x-btn" onClick={onClose} aria-label="Close">✕</button>
+  if (sent) {
+    return (
+      <div className="overlay funds-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+        <div className="funds-sheet" role="dialog" aria-label="Add funds">
+          <div className="funds-success">
+            <span className="funds-success-circle">{CHECK_ICON_BIG}</span>
+            <h3>Request sent!</h3>
+            <p>Once our team confirms your payment, the balance lands in your account. Watch the status under “My fund requests”.</p>
+            <button type="button" className="funds-submit funds-success-btn" onClick={onDone}>Done</button>
+          </div>
         </div>
-        <p className="sub">Pay with any method below, then submit the form. Your balance will be credited after approval.</p>
-        {methods.length === 0 && <div className="notice warn">No payment methods are set up yet. Please check back soon.</div>}
-        <div className="method-chips">
+      </div>
+    );
+  }
+
+  return (
+    <div className="overlay funds-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="funds-sheet" role="dialog" aria-label="Add funds">
+        <div className="funds-head">
+          <h3>Add funds</h3>
+          <button type="button" className="funds-x" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+        <p className="funds-intro">Pay &amp; add funds</p>
+        <p className="funds-sub">Pick a payment method, pay with its QR / account, then tell us the amount below.</p>
+        {methods.length === 0 && <div className="funds-empty">Payment methods are being set up. Message support in the chat (bottom-right) and we&apos;ll top you up manually.</div>}
+        <div className="funds-pills">
           {methods.map((m) => (
-            <button key={m.id} type="button" className={`chip${methodId === m.id ? ' active' : ''}`} onClick={() => setMethodId(m.id)}>
+            <button key={m.id} type="button" className={`funds-pill${methodId === m.id ? ' active' : ''}`} onClick={() => setMethodId(m.id)}>
               {m.label}
             </button>
           ))}
         </div>
         {method && (
-          <div className="panel" style={{ marginBottom: 14 }}>
-            <h3>{method.label}</h3>
-            {method.qrUrl && <img className="qr-img" src={method.qrUrl} alt={`QR code for ${method.label}`} />}
-            {method.accountName && <p className="meta-line">Account name: <b>{method.accountName}</b></p>}
+          <div className="funds-method">
+            <h4>{method.label}</h4>
+            {method.qrUrl
+              ? <img className="funds-qr" src={method.qrUrl} alt={`${method.label} QR scanner — scan to pay`} />
+              : <p className="funds-method-fallback">Pay to the account below.</p>}
+            {method.accountName && <p className="funds-row"><span>Account title</span><b>{method.accountName}</b></p>}
             {method.accountNumber && (
-              <p className="copy-row"><span className="mono">{method.accountNumber}</span>
-                <button type="button" className="btn btn-sm" onClick={async () => { await copyText(method.accountNumber); toast('Account number copied.'); }}>Copy</button>
+              <p className="funds-row"><span>Account / number</span><b className="mono">{method.accountNumber}</b>
+                <button type="button" className="funds-copy" onClick={async () => { await copyText(method.accountNumber); setCopied(true); window.setTimeout(() => setCopied(false), 1600); }}>
+                  {copied ? '✓ Copied' : 'Copy'}
+                </button>
               </p>
             )}
           </div>
         )}
         <form onSubmit={submit}>
-          <label className="field"><span>Amount (Rs) — minimum Rs 10</span>
-            <input className="input" type="number" min={10} value={amountRs} onChange={(e) => setAmountRs(e.target.value)} placeholder="e.g. 500" />
-          </label>
-          <p className="hint">Minimum amount: Rs 10.</p>
-          <label className="field"><span>Sender account name *</span>
-            <input className="input" value={senderName} onChange={(e) => setSenderName(e.target.value)} placeholder="Name on the account you paid from" />
-          </label>
-          <label className="field"><span>Payment screenshot *</span>
-            <input className="input" type="file" accept="image/*" onChange={async (e) => {
-              const f = e.target.files?.[0];
-              if (!f) return;
-              try { setProof(await fileToBase64(f)); setProofName(f.name); } catch { toast('Could not read that screenshot.', true); }
-            }} />
-          </label>
-          {proofName && <p className="hint">Attached: {proofName}</p>}
-          {err && <p className="error">{err}</p>}
-          <button type="submit" className="btn btn-primary btn-block" disabled={busy}>
+          <label className="funds-label" htmlFor="funds-amount">Amount you paid (Rs) — min Rs 10</label>
+          <input id="funds-amount" className="funds-input" type="number" inputMode="decimal" min={10} value={amountRs} onChange={(e) => setAmountRs(e.target.value)} placeholder="e.g. 1000" />
+          <label className="funds-label" htmlFor="funds-sender">Your sending account name *</label>
+          <input id="funds-sender" className="funds-input" value={senderName} onChange={(e) => setSenderName(e.target.value)} placeholder="Name on the account you paid from" />
+          <span className="funds-label" id="fund-proof-label">Payment screenshot *</span>
+          <input ref={fileRef} className="funds-file-hidden" type="file" accept="image/png,image/jpeg,image/webp" aria-label="Upload payment screenshot" onChange={(e) => handleProofFile(e.target.files?.[0])} />
+          {proof ? (
+            <div className="funds-proof-attached">
+              <img src={proof} alt="Your payment screenshot" />
+              <div className="funds-proof-text">
+                <b>{CHECK_ICON} Screenshot attached</b>
+                <span>The team can check it while verifying your payment.</span>
+              </div>
+              <button type="button" className="funds-proof-remove" aria-label="Remove screenshot" onClick={() => { setProof(undefined); if (fileRef.current) fileRef.current.value = ''; }}>✕</button>
+            </div>
+          ) : (
+            <button type="button" className="funds-proof-empty" aria-labelledby="fund-proof-label" onClick={() => fileRef.current?.click()}>
+              <span className="funds-proof-icon">{IMAGE_PLUS_ICON}</span>
+              <span className="funds-proof-titles">
+                <b>Attach payment screenshot</b>
+                <span>Required — the receipt from JazzCash / your bank app</span>
+              </span>
+            </button>
+          )}
+          {err && <p className="funds-error" role="alert">{err}</p>}
+          <button type="submit" className="funds-submit" disabled={busy}>
             {busy ? 'Sending…' : "I've paid — credit my balance"}
           </button>
+          <p className="funds-footnote">Pay first with the QR / account above, then submit with your payment screenshot attached — it&apos;s required. Balance is credited after the team verifies.</p>
         </form>
       </div>
     </div>
